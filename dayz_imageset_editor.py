@@ -29,6 +29,16 @@ from PyQt5.QtCore import Qt, QPointF
 from PyQt5.QtGui import QPixmap, QColor, QPainter, QCursor, QKeySequence, QIcon
 from PIL import Image
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 class MoveItemsCommand(QUndoCommand):
     def __init__(self, items_data, description="Move Items"):
         super().__init__(description)
@@ -437,13 +447,13 @@ class DayZImageset(QMainWindow):
         # --- Undo / Redo Buttons ---
         row1_layout.addWidget(QLabel(" | "))
         btn_undo = QPushButton()
-        btn_undo.setIcon(QIcon("resources/reply-fill.svg"))
+        btn_undo.setIcon(QIcon(resource_path("resources/reply-fill.svg")))
         btn_undo.setToolTip("Undo (Ctrl+Z)")
         btn_undo.clicked.connect(self.undo_stack.undo)
         row1_layout.addWidget(btn_undo)
 
         btn_redo = QPushButton()
-        btn_redo.setIcon(QIcon("resources/share-forward-fill.svg"))
+        btn_redo.setIcon(QIcon(resource_path("resources/share-forward-fill.svg")))
         btn_redo.setToolTip("Redo (Ctrl+Y)")
         btn_redo.clicked.connect(self.undo_stack.redo)
         row1_layout.addWidget(btn_redo)
@@ -467,31 +477,31 @@ class DayZImageset(QMainWindow):
         row1_layout.addWidget(QLabel(" | Align:"))
         
         btn_align_left = QPushButton()
-        btn_align_left.setIcon(QIcon("resources/align-item-left-fill.svg"))
+        btn_align_left.setIcon(QIcon(resource_path("resources/align-item-left-fill.svg")))
         btn_align_left.setToolTip("Align Left")
         btn_align_left.clicked.connect(lambda: self.align_selected("left"))
         row1_layout.addWidget(btn_align_left)
         
         btn_align_center = QPushButton()
-        btn_align_center.setIcon(QIcon("resources/align-item-horizontal-center-fill.svg"))
+        btn_align_center.setIcon(QIcon(resource_path("resources/align-item-horizontal-center-fill.svg")))
         btn_align_center.setToolTip("Align Center")
         btn_align_center.clicked.connect(lambda: self.align_selected("center"))
         row1_layout.addWidget(btn_align_center)
         
         btn_align_right = QPushButton()
-        btn_align_right.setIcon(QIcon("resources/align-item-right-fill.svg"))
+        btn_align_right.setIcon(QIcon(resource_path("resources/align-item-right-fill.svg")))
         btn_align_right.setToolTip("Align Right")
         btn_align_right.clicked.connect(lambda: self.align_selected("right"))
         row1_layout.addWidget(btn_align_right)
         
         btn_align_bottom = QPushButton()
-        btn_align_bottom.setIcon(QIcon("resources/align-item-bottom-fill.svg"))
+        btn_align_bottom.setIcon(QIcon(resource_path("resources/align-item-bottom-fill.svg")))
         btn_align_bottom.setToolTip("Align Bottom")
         btn_align_bottom.clicked.connect(lambda: self.align_selected("bottom"))
         row1_layout.addWidget(btn_align_bottom)
 
         btn_align_top = QPushButton()
-        btn_align_top.setIcon(QIcon("resources/align-item-top-fill.svg"))
+        btn_align_top.setIcon(QIcon(resource_path("resources/align-item-top-fill.svg")))
         btn_align_top.setToolTip("Align Top")
         btn_align_top.clicked.connect(lambda: self.align_selected("top"))
         row1_layout.addWidget(btn_align_top)
@@ -969,16 +979,16 @@ class DayZImageset(QMainWindow):
             QPushButton:hover { background-color: #24282E; }
             QPushButton:pressed { background-color: #1F2329; }
             QComboBox { background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }
-            QComboBox::drop-down { image: url(resources/arrow-down-s-fill.svg); border: none; background-color: #24282E; }
+            QComboBox::drop-down { image: url(resource_path("resources/arrow-down-s-fill.svg")); border: none; background-color: #24282E; }
             QComboBox QAbstractItemView { background-color: #2C3136; color: #8AA2AE; selection-background-color: #24282E; }
             QSpinBox { background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }
-            QSpinBox::up-button { image: url(resources/arrow-up-s-fill.svg); background-color: #24282E; border: none; width: 16px; } 
-            QSpinBox::down-button { image: url(resources/arrow-down-s-fill.svg); background-color: #24282E; border: none; width: 16px; }
+            QSpinBox::up-button { image: url(resource_path("resources/arrow-up-s-fill.svg")); background-color: #24282E; border: none; width: 16px; } 
+            QSpinBox::down-button { image: url(resource_path("resources/arrow-down-s-fill.svg")); background-color: #24282E; border: none; width: 16px; }
             QLabel { color: #8AA2AE; }
             QCheckBox { color: #8AA2AE; }
             QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #24282E; border-radius: 2px; }
             QCheckBox::indicator:unchecked { background-color: #2C3136; }
-            QCheckBox::indicator:checked { image: url(resources/close-fill.svg); background-color: #24282E; }
+            QCheckBox::indicator:checked { image: url(resource_path("resources/close-fill.svg")); background-color: #24282E; }
             QTreeWidget { background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; gridline-color: #24282E; }
             QTreeWidget::item:selected { background-color: #24282E; }
             QScrollBar:vertical, QScrollBar:horizontal { background-color: #1F2329; border: 1px solid #24282E; }
