@@ -108,7 +108,7 @@ class DraggableAsset(QGraphicsPixmapItem):
         self.selection_overlay.setPen(QColor(0, 0, 0, 0))
         self.selection_overlay.hide()
         
-        # --- CRITICAL FIX: Make overlays transparent to mouse clicks ---
+        # --- Make overlays transparent to mouse clicks ---
         self.selection_overlay.setAcceptedMouseButtons(Qt.NoButton)
         
         inset_rect = self.boundingRect().adjusted(1, 1, -1, -1)
@@ -117,7 +117,7 @@ class DraggableAsset(QGraphicsPixmapItem):
         self.border_rect.setBrush(QColor(0, 0, 0, 0))
         self.border_rect.hide()
         
-        # --- CRITICAL FIX: Make borders transparent to mouse clicks ---
+        # --- Make borders transparent to mouse clicks ---
         self.border_rect.setAcceptedMouseButtons(Qt.NoButton)
     
     def set_outline(self, color):
@@ -174,7 +174,7 @@ class ZoomableView(QGraphicsView):
             scene_pos = self.mapToScene(event.pos())
             item_under_mouse = self.scene().itemAt(scene_pos, self.transform())
             
-            # FIX 1: Drill down to the parent asset if we hit the visual overlay or border
+            # Drill down to the parent asset if we hit the visual overlay or border
             if item_under_mouse and item_under_mouse.parentItem():
                 item_under_mouse = item_under_mouse.parentItem()
                 
@@ -228,7 +228,7 @@ class ZoomableView(QGraphicsView):
             if self.selection_rect_item:
                 self.scene().removeItem(self.selection_rect_item)
             
-            # --- CRITICAL FIX: Normalize geometry so dragging up/left works flawlessly ---
+            # --- Normalize geometry so dragging up/left works flawlessly ---
             x = min(self.selection_rect_start.x(), current_pos.x())
             y = min(self.selection_rect_start.y(), current_pos.y())
             w = abs(current_pos.x() - self.selection_rect_start.x())
@@ -973,27 +973,32 @@ class DayZImageset(QMainWindow):
             QMessageBox.warning(self, "Missing Source Files", f"Project loaded, but {missing_files_count} image file(s) were skipped.")
 
     def _apply_dark_theme(self):
-        stylesheet = """
-            QMainWindow, QWidget { background-color: #1F2329; color: #8AA2AE; }
-            QPushButton { background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }
-            QPushButton:hover { background-color: #24282E; }
-            QPushButton:pressed { background-color: #1F2329; }
-            QComboBox { background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }
-            QComboBox::drop-down { image: url(resource_path("resources/arrow-down-s-fill.svg")); border: none; background-color: #24282E; }
-            QComboBox QAbstractItemView { background-color: #2C3136; color: #8AA2AE; selection-background-color: #24282E; }
-            QSpinBox { background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }
-            QSpinBox::up-button { image: url(resource_path("resources/arrow-up-s-fill.svg")); background-color: #24282E; border: none; width: 16px; } 
-            QSpinBox::down-button { image: url(resource_path("resources/arrow-down-s-fill.svg")); background-color: #24282E; border: none; width: 16px; }
-            QLabel { color: #8AA2AE; }
-            QCheckBox { color: #8AA2AE; }
-            QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #24282E; border-radius: 2px; }
-            QCheckBox::indicator:unchecked { background-color: #2C3136; }
-            QCheckBox::indicator:checked { image: url(resource_path("resources/close-fill.svg")); background-color: #24282E; }
-            QTreeWidget { background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; gridline-color: #24282E; }
-            QTreeWidget::item:selected { background-color: #24282E; }
-            QScrollBar:vertical, QScrollBar:horizontal { background-color: #1F2329; border: 1px solid #24282E; }
-            QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background-color: #2C3136; border: 1px solid #24282E; border-radius: 2px; }
-            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background-color: #24282E; }
+        # Resolve resource paths for stylesheet images
+        arrow_down = resource_path("resources/arrow-down-s-fill.svg").replace("\\", "/")
+        arrow_up = resource_path("resources/arrow-up-s-fill.svg").replace("\\", "/")
+        checkbox_icon = resource_path("resources/close-fill.svg").replace("\\", "/")
+        
+        stylesheet = f"""
+            QMainWindow, QWidget {{ background-color: #1F2329; color: #8AA2AE; }}
+            QPushButton {{ background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }}
+            QPushButton:hover {{ background-color: #24282E; }}
+            QPushButton:pressed {{ background-color: #1F2329; }}
+            QComboBox {{ background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }}
+            QComboBox::drop-down {{ image: url("{arrow_down}"); border: none; background-color: #24282E; }}
+            QComboBox QAbstractItemView {{ background-color: #2C3136; color: #8AA2AE; selection-background-color: #24282E; }}
+            QSpinBox {{ background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }}
+            QSpinBox::up-button {{ image: url("{arrow_up}"); background-color: #24282E; border: none; width: 16px; }} 
+            QSpinBox::down-button {{ image: url("{arrow_down}"); background-color: #24282E; border: none; width: 16px; }}
+            QLabel {{ color: #8AA2AE; }}
+            QCheckBox {{ color: #8AA2AE; }}
+            QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid #24282E; border-radius: 2px; }}
+            QCheckBox::indicator:unchecked {{ background-color: #2C3136; }}
+            QCheckBox::indicator:checked {{ image: url("{checkbox_icon}"); background-color: #24282E; }}
+            QTreeWidget {{ background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; gridline-color: #24282E; }}
+            QTreeWidget::item:selected {{ background-color: #24282E; }}
+            QScrollBar:vertical, QScrollBar:horizontal {{ background-color: #1F2329; border: 1px solid #24282E; }}
+            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background-color: #2C3136; border: 1px solid #24282E; border-radius: 2px; }}
+            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background-color: #24282E; }}
         """
         self.setStyleSheet(stylesheet)
 
@@ -1277,6 +1282,27 @@ class DayZImageset(QMainWindow):
         # Scroll to first selected item if any
         if tree_items_to_select:
             self.tree.scrollToItem(tree_items_to_select[0])
+        
+        self.tree.blockSignals(False)
+        
+        # --- Update Properties Panel ---
+        if len(tree_items_to_select) == 1:
+            item = tree_items_to_select[0]
+            self.edit_item_name.setEnabled(True)
+            self.edit_item_name.blockSignals(True)
+            self.edit_item_name.setText(item.text(0))
+            self.edit_item_name.blockSignals(False)
+            
+            if hasattr(item, 'filepath'):
+                self.edit_item_path.setText(str(item.filepath))
+            else:
+                self.edit_item_path.setText("")
+        else:
+            self.edit_item_name.setEnabled(False)
+            self.edit_item_path.setText("")
+            self.edit_item_name.blockSignals(True)
+            self.edit_item_name.setText("")
+            self.edit_item_name.blockSignals(False)
         
         self.tree.blockSignals(False)
 
