@@ -1,3 +1,4 @@
+![Logo](images/DayZ-Image-Editor-logo.png)
 # DayZ Imageset Editor :black_nib:
 
 A standalone, visual drag-and-drop layout editor and atlas compiler for DayZ `.imageset` configurations. This application is a lightweight, dark-themed alternative designed to completely bypass the frustrating quirks, crashes, and limitations of the native DayZ Workbench UI tools.
