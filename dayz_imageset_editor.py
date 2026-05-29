@@ -220,6 +220,14 @@ class ZoomableView(QGraphicsView):
             # Move all selected items by the same delta
             for item, start_pos in self.drag_start_item_positions.items():
                 new_pos = start_pos + delta
+                
+                # Apply snapping if enabled
+                if self.workbench:
+                    if self.workbench.snap_to_grid_enabled:
+                        new_pos = self.workbench.snap_to_grid(new_pos)
+                    if self.workbench.snap_to_elements_enabled:
+                        new_pos = self.workbench.snap_to_elements(item, new_pos)
+                
                 item.setPos(new_pos)
             
             event.accept()
@@ -533,6 +541,7 @@ class DayZImageset(QMainWindow):
         
         self.check_snap_elements = QCheckBox("Snap to Elements")
         self.check_snap_elements.setChecked(False)
+        self.check_snap_elements.toggled.connect(self.on_snap_elements_toggled)
         row2_layout.addWidget(self.check_snap_elements)
         
         self.check_show_outlines = QCheckBox("Show Outlines")
@@ -869,39 +878,69 @@ class DayZImageset(QMainWindow):
     def save_project(self):
         save_file, _ = QFileDialog.getSaveFileName(self, "Save Project State", "", "Imageset Project (*.json)")
         if not save_file: 
-            return False # Added return
+            return False
             
         project_data = {
             "canvas_width": self.canvas_width,
             "canvas_height": self.canvas_height,
-            "assets": []
+            "settings": {
+                "snap_to_grid": self.snap_to_grid_enabled,
+                "grid_size": self.grid_size,
+                "show_gridlines": self.show_gridlines,
+                "snap_to_elements": self.snap_to_elements_enabled,
+                "snap_distance": self.snap_distance,
+                "show_outlines": self.show_outlines,
+                "outline_color": self.outline_color.name(),
+                "canvas_color": (self.canvas_background_rect.brush().color().name() if self.canvas_background_rect is not None else "#2a2a2a"),
+                "zoom": self.current_zoom_percentage
+            },
+            "tree": [],
+            "assets": {}
         }
         
-        for item in self.scene.items():
-            if isinstance(item, DraggableAsset):
-                if hasattr(item, 'tree_item') and item.tree_item and hasattr(item.tree_item, 'filepath'):
-                    group_name = item.group_item.text(0) if item.group_item else "ROOT (Ungrouped)"
-                    project_data["assets"].append({
-                        "filepath": str(item.tree_item.filepath),
-                        "name": item.name,
-                        "x": item.pos().x(),
-                        "y": item.pos().y(),
-                        "group": group_name
-                    })
-                    
+        # Serialize tree structure
+        for i in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(i)
+            project_data["tree"].append(self._serialize_tree_item(group, project_data["assets"]))
+        
         import json
         try:
             with open(save_file, "w", encoding="utf-8") as f:
                 json.dump(project_data, f, indent=4)
             print(f"Project state successfully saved to {save_file}")
-            return True # Added return
+            return True
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to write project file:\n{e}")
-            return False # Added return
+            return False
+
+    def _serialize_tree_item(self, item, assets_dict):
+        """Recursively serialize tree item and its children"""
+        node_data = {"name": item.text(0), "children": []}
+        
+        # If this is an asset (not a group), store its data
+        if hasattr(item, 'asset_item') and item.asset_item:
+            asset = item.asset_item
+            if hasattr(item, 'filepath'):
+                asset_key = str(item.filepath)
+                assets_dict[asset_key] = {
+                    "filepath": str(item.filepath),
+                    "name": asset.name,
+                    "x": asset.pos().x(),
+                    "y": asset.pos().y()
+                }
+                node_data["asset_path"] = asset_key
+        
+        # Serialize children
+        for i in range(item.childCount()):
+            child = item.child(i)
+            node_data["children"].append(self._serialize_tree_item(child, assets_dict))
+        
+        return node_data
 
     def load_project(self):
         load_file, _ = QFileDialog.getOpenFileName(self, "Load Project State", "", "Imageset Project (*.json)")
-        if not load_file: return
+        if not load_file: 
+            return
             
         import json
         try:
@@ -911,66 +950,125 @@ class DayZImageset(QMainWindow):
             QMessageBox.critical(self, "Load Error", f"Failed to read project file:\n{e}")
             return
             
+        # Clear scene and tree
         self.tree.clear()
         self.raw_images.clear()
         self.scene.clear()
         self.grid_lines.clear()
         self.current_element_count = 0
         
-        # Backwards compatibility check incase you load a project saved before the width/height update
-        if "canvas_size" in project_data:
-            self.canvas_width = project_data["canvas_size"]
-            self.canvas_height = project_data["canvas_size"]
-        else:
-            self.canvas_width = project_data.get("canvas_width", 4096)
-            self.canvas_height = project_data.get("canvas_height", 4096)
+        # Load canvas size
+        self.canvas_width = project_data.get("canvas_width", 4096)
+        self.canvas_height = project_data.get("canvas_height", 4096)
 
         self.combo_size.blockSignals(True)
         self.combo_size.setCurrentText(str(self.canvas_width) if self.canvas_width == self.canvas_height else f"{self.canvas_width}x{self.canvas_height}")
         self.combo_size.blockSignals(False)
         self.update_canvas_size()
         
-        group_nodes = {}
+        # Load workspace settings
+        settings = project_data.get("settings", {})
+        self.snap_to_grid_enabled = settings.get("snap_to_grid", False)
+        self.check_snap_grid.blockSignals(True)
+        self.check_snap_grid.setChecked(self.snap_to_grid_enabled)
+        self.check_snap_grid.blockSignals(False)
+        
+        self.grid_size = settings.get("grid_size", 32)
+        self.spin_grid_size.blockSignals(True)
+        self.spin_grid_size.setValue(self.grid_size)
+        self.spin_grid_size.blockSignals(False)
+        
+        self.show_gridlines = settings.get("show_gridlines", False)
+        self.check_show_gridlines.blockSignals(True)
+        self.check_show_gridlines.setChecked(self.show_gridlines)
+        self.check_show_gridlines.blockSignals(False)
+        
+        self.snap_to_elements_enabled = settings.get("snap_to_elements", False)
+        self.check_snap_elements.blockSignals(True)
+        self.check_snap_elements.setChecked(self.snap_to_elements_enabled)
+        self.check_snap_elements.blockSignals(False)
+        
+        self.snap_distance = settings.get("snap_distance", 15)
+        
+        self.show_outlines = settings.get("show_outlines", False)
+        self.check_show_outlines.blockSignals(True)
+        self.check_show_outlines.setChecked(self.show_outlines)
+        self.check_show_outlines.blockSignals(False)
+        
+        outline_color_str = settings.get("outline_color", "#ffffff")
+        self.outline_color = QColor(outline_color_str)
+        
+        zoom_level = settings.get("zoom", 100)
+        self.set_zoom_level(zoom_level)
+        
+        # Restore canvas background color if provided
+        canvas_color_str = settings.get("canvas_color", "#2a2a2a")
+        if self.canvas_background_rect is not None:
+            try:
+                self.canvas_background_rect.setBrush(QColor(canvas_color_str))
+            except Exception:
+                pass
+        
+        # Redraw gridlines if enabled
+        if self.show_gridlines:
+            self.draw_gridlines()
+        
+        # Load assets and tree structure
+        assets_dict = project_data.get("assets", {})
+        tree_structure = project_data.get("tree", [])
         missing_files_count = 0
         
-        for asset_data in project_data.get("assets", []):
-            filepath = Path(asset_data["filepath"])
-            
-            if not filepath.exists():
-                missing_files_count += 1
-                continue
-                
-            group_name = asset_data["group"]
-            if group_name not in group_nodes:
-                group_node = QTreeWidgetItem(self.tree, [group_name])
-                group_nodes[group_name] = group_node
-                self.tree.expandItem(group_node)
-            else:
-                group_node = group_nodes[group_name]
-                
-            name = asset_data["name"]
-            self.raw_images[str(filepath)] = Image.open(filepath).convert("RGBA")
-            self.raw_images[name] = self.raw_images[str(filepath)] 
-            
-            child = QTreeWidgetItem(group_node, [name])
-            child.filepath = filepath
-            
-            pixmap = QPixmap(str(filepath))
-            asset_item = DraggableAsset(name, pixmap, group_node, self.canvas_width, self.canvas_height)
-            asset_item.setPos(asset_data["x"], asset_data["y"])
-            asset_item.tree_item = child
-            child.asset_item = asset_item
-            
-            if self.show_outlines:
-                asset_item.set_outline(self.outline_color)
-                
-            self.scene.addItem(asset_item)
-            
+        for tree_node in tree_structure:
+            self._deserialize_tree_item(tree_node, None, assets_dict, missing_files_count)
+        
         self.update_element_count()
         self.refresh_group_dropdown()
         
         if missing_files_count > 0:
             QMessageBox.warning(self, "Missing Source Files", f"Project loaded, but {missing_files_count} image file(s) were skipped.")
+
+    def _deserialize_tree_item(self, node_data, parent_item, assets_dict, missing_count):
+        """Recursively deserialize tree from structure"""
+        # Create tree item
+        if parent_item is None:
+            tree_item = QTreeWidgetItem(self.tree, [node_data["name"]])
+        else:
+            tree_item = QTreeWidgetItem(parent_item, [node_data["name"]])
+        
+        tree_item.setFlags(tree_item.flags() | Qt.ItemIsEditable)
+        
+        # If this is an asset, load and place it
+        if "asset_path" in node_data:
+            asset_path = node_data["asset_path"]
+            if asset_path in assets_dict:
+                asset_data = assets_dict[asset_path]
+                filepath = Path(asset_data["filepath"])
+                
+                if filepath.exists():
+                    name = asset_data["name"]
+                    self.raw_images[str(filepath)] = Image.open(filepath).convert("RGBA")
+                    self.raw_images[name] = self.raw_images[str(filepath)]
+                    
+                    tree_item.filepath = filepath
+                    pixmap = QPixmap(str(filepath))
+                    asset_item = DraggableAsset(name, pixmap, parent_item or tree_item, self.canvas_width, self.canvas_height)
+                    asset_item.setPos(asset_data["x"], asset_data["y"])
+                    asset_item.tree_item = tree_item
+                    tree_item.asset_item = asset_item
+                    
+                    if self.show_outlines:
+                        asset_item.set_outline(self.outline_color)
+                    
+                    self.scene.addItem(asset_item)
+                    self.current_element_count += 1
+                else:
+                    missing_count += 1
+        
+        # Recursively load children
+        for child_node in node_data.get("children", []):
+            self._deserialize_tree_item(child_node, tree_item, assets_dict, missing_count)
+        
+        self.tree.expandItem(tree_item)
 
     def _apply_dark_theme(self):
         # Resolve resource paths for stylesheet images
@@ -1032,9 +1130,9 @@ class DayZImageset(QMainWindow):
     def update_canvas_size(self):
         self.scene.setSceneRect(0, 0, self.canvas_width, self.canvas_height)
         
-        for item in self.scene.items():
-            if hasattr(item, 'is_boundary') or hasattr(item, 'is_canvas_bg') or hasattr(item, 'is_grid_line'):
-                self.scene.removeItem(item)
+        # Safely remove the old background without looping through the entire scene
+        if self.canvas_background_rect is not None and self.canvas_background_rect.scene() == self.scene:
+            self.scene.removeItem(self.canvas_background_rect)
         
         self.canvas_background_rect = self.scene.addRect(0, 0, self.canvas_width, self.canvas_height)
         self.canvas_background_rect.setBrush(QColor("#2a2a2a"))
@@ -1048,6 +1146,7 @@ class DayZImageset(QMainWindow):
                 item.canvas_width = self.canvas_width
                 item.canvas_height = self.canvas_height
         
+        # Redraw gridlines (this will safely clear the old ones via clear_gridlines)
         if self.show_gridlines:
             self.draw_gridlines()
 
@@ -1058,6 +1157,75 @@ class DayZImageset(QMainWindow):
     
     def on_snap_grid_toggled(self, checked):
         self.snap_to_grid_enabled = checked
+    
+    def on_snap_elements_toggled(self, checked):
+        self.snap_to_elements_enabled = checked
+    
+    def snap_to_grid(self, pos):
+        """Snap a position to the grid"""
+        if self.grid_size <= 0:
+            return pos
+        
+        x = round(pos.x() / self.grid_size) * self.grid_size
+        y = round(pos.y() / self.grid_size) * self.grid_size
+        return QPointF(x, y)
+    
+    def snap_to_elements(self, current_item, pos):
+        """Snap current item to nearby elements within snap distance"""
+        snap_distance = self.snap_distance
+        snapped_pos = QPointF(pos)
+        
+        # Get current item's bounding rect in scene coordinates
+        current_rect = current_item.boundingRect()
+        current_rect.moveTo(pos)
+        
+        # Check all other items for snapping opportunities
+        min_dist_x = snap_distance
+        min_dist_y = snap_distance
+        snap_x = None
+        snap_y = None
+        
+        for item in self.scene.items():
+            if not isinstance(item, DraggableAsset) or item == current_item:
+                continue
+            
+            item_rect = item.boundingRect()
+            item_rect.moveTo(item.pos())
+            
+            # Check horizontal snapping (left, right edges)
+            # Snap to item's right edge
+            dist = abs(current_rect.left() - item_rect.right())
+            if dist < min_dist_x:
+                min_dist_x = dist
+                snap_x = item_rect.right()
+            
+            # Snap to item's left edge
+            dist = abs(current_rect.right() - item_rect.left())
+            if dist < min_dist_x:
+                min_dist_x = dist
+                snap_x = item_rect.left() - current_rect.width()
+            
+            # Check vertical snapping (top, bottom edges)
+            # Snap to item's bottom edge
+            dist = abs(current_rect.top() - item_rect.bottom())
+            if dist < min_dist_y:
+                min_dist_y = dist
+                snap_y = item_rect.bottom()
+            
+            # Snap to item's top edge
+            dist = abs(current_rect.bottom() - item_rect.top())
+            if dist < min_dist_y:
+                min_dist_y = dist
+                snap_y = item_rect.top() - current_rect.height()
+        
+        # Apply snapping if within snap distance
+        if snap_x is not None:
+            snapped_pos.setX(snap_x)
+        if snap_y is not None:
+            snapped_pos.setY(snap_y)
+        
+        return snapped_pos
+    
     
     def on_grid_size_changed(self, value):
         self.grid_size = value
@@ -1091,7 +1259,9 @@ class DayZImageset(QMainWindow):
     
     def clear_gridlines(self):
         for line in self.grid_lines:
-            self.scene.removeItem(line)
+            # Check if it actually belongs to the scene before removing it
+            if line.scene() == self.scene:
+                self.scene.removeItem(line)
         self.grid_lines.clear()
     
     def on_show_outlines_toggled(self, checked):
