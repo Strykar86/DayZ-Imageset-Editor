@@ -36,3 +36,12 @@ Development is actively ongoing. Planned features for upcoming major releases in
 *   \[ \] **Native Reverse-Parsing:** The ability to import pre-existing `.imageset` files directly back into the engine, automatically rebuilding the interactive canvas workspace and outputting `.png` files with folders created for `groups`.
 *   \[ \] **Direct .EDDS Decompression:** Integrating localized binary extraction to convert `.edds` textures directly into readable `.png` images without needing external command-line conversion workarounds or opening the dread Workbench.
 *   \[ \] **Integrated Packing Packing Algorithms:** Optional automated texture packing (Bin-Packing) routines to auto-arrange asset groups cleanly at the click of a button. To give you a baseline to work with.
+
+## Previews & Interface
+
+<img width="720" alt="DayZ_Imageset_Editor_screenshot1" src="https://github.com/user-attachments/assets/1c2c2f90-8671-4a50-b2df-6a347c9fa58d" />
+<img width="250" alt="Drag & Drop functionality" src="https://github.com/user-attachments/assets/1abff907-088b-4503-b883-ee2701820745" />
+<img width="720" alt="DayZ_Imageset_Editor_screenshot3" src="https://github.com/user-attachments/assets/fe42dcc5-d415-4070-a5d8-8a435cd92028" />
+<img width="720" alt="Show Outlines" src="https://github.com/user-attachments/assets/e3f29a8a-a488-40df-9742-78e896dbe424" />
+<img width="720" alt="Show Gridlines" src="https://github.com/user-attachments/assets/70329035-29db-4141-8a51-218928fe5f1c" />
+<img width="720" alt="Save Prompt on Close" src="https://github.com/user-attachments/assets/189e3de1-12fb-41d9-becc-9e50d00de11a" />
