@@ -24,10 +24,12 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTreeWidgetItem, QGraphicsView, QGraphicsScene, 
                              QGraphicsPixmapItem, QGraphicsRectItem, QColorDialog, QLabel, QComboBox,
                              QCheckBox, QSpinBox, QMessageBox, QSplitter, QDialog,
-                             QInputDialog, QLineEdit, QUndoStack, QUndoCommand, QShortcut)
+                             QInputDialog, QLineEdit, QUndoStack, QUndoCommand, QShortcut, QTabWidget,
+                             QScrollArea, QSizePolicy)
 from PyQt5.QtCore import Qt, QPointF
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QCursor, QKeySequence, QIcon
+from PyQt5.QtGui import QPixmap, QColor, QPainter, QCursor, QKeySequence, QIcon, QImage
 from PIL import Image
+from imagesetconv_wrapper import ImagesetConverter
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -42,51 +44,75 @@ def resource_path(relative_path):
 class MoveItemsCommand(QUndoCommand):
     def __init__(self, items_data, description="Move Items"):
         super().__init__(description)
-        # items_data is a list of tuples: (asset_item, old_pos, new_pos)
+        # items_data is a list of tuples: (element_item, old_pos, new_pos)
         self.items_data = items_data
 
     def undo(self):
-        for asset, old_pos, new_pos in self.items_data:
-            asset.setPos(old_pos)
+        for element, old_pos, new_pos in self.items_data:
+            element.setPos(old_pos)
 
     def redo(self):
-        for asset, old_pos, new_pos in self.items_data:
-            asset.setPos(new_pos)
+        for element, old_pos, new_pos in self.items_data:
+            element.setPos(new_pos)
 
 class DeleteItemsCommand(QUndoCommand):
-    def __init__(self, workbench, assets_to_delete, description="Delete Items"):
+    def __init__(self, workspace, elements_to_delete, description="Delete Items"):
         super().__init__(description)
-        self.workbench = workbench
-        self.scene = workbench.scene
-        self.tree = workbench.tree
+        self.workspace = workspace
+        self.scene = workspace.scene
+        self.tree = workspace.tree
         
         # Store everything needed to cleanly restore the items
         self.items_data = []
-        for asset in assets_to_delete:
-            tree_item = getattr(asset, 'tree_item', None)
+        for element in elements_to_delete:
+            tree_item = getattr(element, 'tree_item', None)
             parent_item = tree_item.parent() or self.tree.invisibleRootItem() if tree_item else None
             self.items_data.append({
-                'asset': asset,
+                'element': element,
                 'tree_item': tree_item,
                 'parent': parent_item
             })
 
     def undo(self):
         for data in self.items_data:
-            asset = data['asset']
-            self.scene.addItem(asset)
+            element = data['element']
+            self.scene.addItem(element)
             if data['tree_item'] and data['parent']:
                 data['parent'].addChild(data['tree_item'])
-        self.workbench.update_element_count()
+        self.workspace.update_element_count()
 
     def redo(self):
         for data in self.items_data:
-            asset = data['asset']
-            asset.hide_selection_overlay()
-            self.scene.removeItem(asset)
+            element = data['element']
+            element.hide_selection_overlay()
+            self.scene.removeItem(element)
             if data['tree_item'] and data['parent']:
                 data['parent'].removeChild(data['tree_item'])
-        self.workbench.update_element_count()
+        self.workspace.update_element_count()
+
+class SpinBoxMoveCommand(QUndoCommand):
+    def __init__(self, element, old_pos, new_pos, description="Move Item via SpinBox"):
+        super().__init__(description)
+        self.element = element
+        self.old_pos = old_pos
+        self.new_pos = new_pos
+
+    def undo(self):
+        self.element.setPos(self.old_pos)
+
+    def redo(self):
+        self.element.setPos(self.new_pos)
+
+    def id(self):
+        # A unique ID tells the UndoStack these commands are allowed to merge
+        return 999
+
+    def mergeWith(self, command):
+        # If it's the same element, keep the original starting position but adopt its new end position
+        if command.id() == self.id() and command.element == self.element:
+            self.new_pos = command.new_pos
+            return True
+        return False
 
 class DraggableAsset(QGraphicsPixmapItem):
     def __init__(self, name, pixmap, group_item, canvas_width=4096, canvas_height=4096):
@@ -147,9 +173,9 @@ class DraggableAsset(QGraphicsPixmapItem):
         return super().itemChange(change, value)
         
 class ZoomableView(QGraphicsView):
-    def __init__(self, scene, workbench=None):
+    def __init__(self, scene, workspace=None):
         super().__init__(scene)
-        self.workbench = workbench
+        self.workspace = workspace
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.NoDrag)
@@ -174,7 +200,7 @@ class ZoomableView(QGraphicsView):
             scene_pos = self.mapToScene(event.pos())
             item_under_mouse = self.scene().itemAt(scene_pos, self.transform())
             
-            # Drill down to the parent asset if we hit the visual overlay or border
+            # Drill down to the parent element if we hit the visual overlay or border
             if item_under_mouse and item_under_mouse.parentItem():
                 item_under_mouse = item_under_mouse.parentItem()
                 
@@ -222,13 +248,17 @@ class ZoomableView(QGraphicsView):
                 new_pos = start_pos + delta
                 
                 # Apply snapping if enabled
-                if self.workbench:
-                    if self.workbench.snap_to_grid_enabled:
-                        new_pos = self.workbench.snap_to_grid(new_pos)
-                    if self.workbench.snap_to_elements_enabled:
-                        new_pos = self.workbench.snap_to_elements(item, new_pos)
+                if self.workspace:
+                    if self.workspace.snap_to_grid_enabled:
+                        new_pos = self.workspace.snap_to_grid(new_pos)
+                    if self.workspace.snap_to_elements_enabled:
+                        new_pos = self.workspace.snap_to_elements(item, new_pos)
                 
                 item.setPos(new_pos)
+
+                # --- Syncing Spinboxes during mouse drag ---
+            if self.workspace and len(self.scene().selectedItems()) == 1:
+                self.workspace.sync_spinboxes_to_item(self.scene().selectedItems()[0])
             
             event.accept()
         elif self.selection_rect_active and self.selection_rect_start:
@@ -267,8 +297,8 @@ class ZoomableView(QGraphicsView):
                         items_moved.append((item, start_pos, item.pos()))
                 
                 # Create undo/redo command if items moved
-                if items_moved and self.workbench:
-                    self.workbench.undo_stack.push(MoveItemsCommand(items_moved))
+                if items_moved and self.workspace:
+                    self.workspace.undo_stack.push(MoveItemsCommand(items_moved))
                 
                 self.drag_active = False
                 self.drag_start_scene_pos = None
@@ -311,16 +341,16 @@ class ZoomableView(QGraphicsView):
             zoomFactor = zoomOutFactor
         
         new_scale = current_scale * zoomFactor
-        if new_scale > 2.0:
-            zoomFactor = 2.0 / current_scale
+        if new_scale > 2.5:
+            zoomFactor = 2.5 / current_scale
         
         self.scale(zoomFactor, zoomFactor)
         
-        if self.workbench:
+        if self.workspace:
             new_transform = self.transform()
             new_scale = new_transform.m11()
             new_zoom_percentage = round(new_scale * 100)
-            self.workbench.set_zoom_level(new_zoom_percentage)
+            self.workspace.set_zoom_level(new_zoom_percentage)
     
     def set_zoom_level(self, percentage):
         scale_factor = percentage / 100.0
@@ -334,29 +364,29 @@ class ZoomableView(QGraphicsView):
         if event.key() == Qt.Key_Delete:
             selected_items = self.scene().selectedItems()
             # Filter for DraggableAsset items only
-            assets_to_delete = [item for item in selected_items if isinstance(item, DraggableAsset)]
+            elements_to_delete = [item for item in selected_items if isinstance(item, DraggableAsset)]
             
-            if assets_to_delete:
+            if elements_to_delete:
                 # Show confirmation dialog
-                item_names = ", ".join([asset.name for asset in assets_to_delete[:3]])
-                if len(assets_to_delete) > 3:
-                    item_names += f"... (+{len(assets_to_delete) - 3} more)"
+                item_names = ", ".join([element.name for element in elements_to_delete[:3]])
+                if len(elements_to_delete) > 3:
+                    item_names += f"... (+{len(elements_to_delete) - 3} more)"
                 
-                reply = QMessageBox.question(self.workbench, 
+                reply = QMessageBox.question(self.workspace, 
                     "Delete Images",
-                    f"Are you sure you wish to delete {len(assets_to_delete)} item(s)? ({item_names})",
+                    f"Are you sure you wish to delete {len(elements_to_delete)} item(s)? ({item_names})",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No)
                 
                 if reply == QMessageBox.Yes:
-                    # Delete all selected assets
-                    for asset in assets_to_delete:
-                        asset.hide_selection_overlay()
-                        if hasattr(asset, 'tree_item') and asset.tree_item:
-                            parent = asset.tree_item.parent() or self.workbench.tree.invisibleRootItem()
-                            parent.removeChild(asset.tree_item)
-                        self.scene().removeItem(asset)
-                    self.workbench.update_element_count()
+                    # Delete all selected elements
+                    for element in elements_to_delete:
+                        element.hide_selection_overlay()
+                        if hasattr(element, 'tree_item') and element.tree_item:
+                            parent = element.tree_item.parent() or self.workspace.tree.invisibleRootItem()
+                            parent.removeChild(element.tree_item)
+                        self.scene().removeItem(element)
+                    self.workspace.update_element_count()
             event.accept()
         else:
             super().keyPressEvent(event)
@@ -397,11 +427,11 @@ class CustomSizeDialog(QDialog):
     def get_dimensions(self):
         return self.spin_w.value(), self.spin_h.value()
 
-
 class DayZImageset(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DayZ Visual Imageset Builder - FUCK Workbench 🖕")
+        self.setWindowTitle("DayZ Imageset Editor - Make something cool for DayZ! 🎨🖌")
+        self.setWindowIcon(QIcon(resource_path("resources/app_icon.ico")))
         self.setGeometry(100, 100, 1600, 900)
         
         self.raw_images = {}
@@ -421,6 +451,7 @@ class DayZImageset(QMainWindow):
         
         self.max_elements = 1000
         self.current_element_count = 0
+        self._is_updating_spins = False # Flag to prevent recursive updates when syncing spinboxes during drag
 
         # --- Undo / Redo Setup ---
         self.undo_stack = QUndoStack(self)
@@ -428,6 +459,9 @@ class DayZImageset(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Z"), self, self.undo_stack.undo)
         QShortcut(QKeySequence("Ctrl+Y"), self, self.undo_stack.redo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self.undo_stack.redo)
+        # --- Help me Obi Wan Kenobi, you're my only hope! 🙏 ---
+        QShortcut(QKeySequence("Ctrl+H"), self, self.show_help_dialog)
+        QShortcut(QKeySequence("F1"), self, self.show_help_dialog)
 
         self._build_ui()
         self._apply_dark_theme()
@@ -447,7 +481,8 @@ class DayZImageset(QMainWindow):
         # Row 1: Workspace layout & Canvas Setup
         row1_layout = QHBoxLayout()
         
-        self.btn_sidebar_pos = QPushButton("← Sidebar")
+        self.btn_sidebar_pos = QPushButton("Sidebar →")
+        self.btn_sidebar_pos.setToolTip("Slide to the right!")
         self.btn_sidebar_pos.setMaximumWidth(100)
         self.btn_sidebar_pos.clicked.connect(self.toggle_sidebar_position)
         row1_layout.addWidget(self.btn_sidebar_pos)
@@ -517,7 +552,20 @@ class DayZImageset(QMainWindow):
         self.check_align_to_canvas = QCheckBox("Align to Canvas")
         self.check_align_to_canvas.setChecked(False)
         row1_layout.addWidget(self.check_align_to_canvas)
+        
         row1_layout.addStretch()
+
+        # Help button
+        btn_help = QPushButton("Help")
+        btn_help.setMaximumWidth(80)
+        btn_help.clicked.connect(self.show_help_dialog)
+        row1_layout.addWidget(btn_help)
+
+        # About button
+        btn_about = QPushButton("About")
+        btn_about.setMaximumWidth(80)
+        btn_about.clicked.connect(self.show_about_dialog)
+        row1_layout.addWidget(btn_about)
         
         # Row 2: Overlays and Snapping
         row2_layout = QHBoxLayout()
@@ -595,20 +643,28 @@ class DayZImageset(QMainWindow):
         sidebar_layout = QVBoxLayout(self.sidebar)
         
         btn_layout = QHBoxLayout()
-        btn_load = QPushButton("Import Folders as Groups")
-        btn_load.clicked.connect(self.import_folders)
-        btn_layout.addWidget(btn_load)
+        btn_import_image = QPushButton("Import Image(s)")
+        btn_import_image.clicked.connect(self.import_images)
+        btn_import_folder = QPushButton("Import Folder(Subfolders as Groups)")
+        btn_import_folder.clicked.connect(self.import_folders)
+        btn_layout.addWidget(btn_import_image)
+        btn_layout.addWidget(btn_import_folder)
         sidebar_layout.addLayout(btn_layout)
+        btn_unpack = QPushButton("Unpack .imageset to Workspace")
+        btn_unpack.setToolTip("Import an existing .imageset and its associated .edds file, unpacking all elements into the workspace for editing. Great for modifying existing assets or using them as a base for new creations!")
+        btn_unpack.setStyleSheet("background-color: #2E8B57; color: white;") # Make it distinct
+        btn_unpack.clicked.connect(self.unpack_imageset_action)
+        sidebar_layout.addWidget(btn_unpack)
         
         proj_btn_layout = QHBoxLayout()
         btn_save_proj = QPushButton("Save Project")
         btn_save_proj.clicked.connect(self.save_project)
         btn_load_proj = QPushButton("Load Project")
-        btn_load_proj.clicked.connect(self.load_project)
+        btn_load_proj.clicked.connect(lambda: self.load_project())
         proj_btn_layout.addWidget(btn_save_proj)
         proj_btn_layout.addWidget(btn_load_proj)
         sidebar_layout.addLayout(proj_btn_layout)
-        
+                
         group_ctrl_layout = QHBoxLayout()
         btn_add_group = QPushButton("+ Add Group")
         btn_add_group.clicked.connect(self.add_manual_group)
@@ -658,19 +714,50 @@ class DayZImageset(QMainWindow):
         path_layout.addWidget(self.edit_item_path)
         self.prop_layout.addLayout(path_layout)
 
+        # --- DIMENSIONS & COORDINATES ---
+        dim_layout = QHBoxLayout()
+        
+        self.label_item_width = QLabel("W: -")
+        self.label_item_height = QLabel("H: -")
+        
+        self.spin_item_x = QSpinBox()
+        self.spin_item_x.setRange(0, 8192) # Max canvas size, will be clamped in DraggableAsset
+        self.spin_item_x.setEnabled(False)
+        self.spin_item_x.setMaximumWidth(60)
+        self.spin_item_x.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.spin_item_x.valueChanged.connect(self.on_xy_spin_changed)
+        
+        self.spin_item_y = QSpinBox()
+        self.spin_item_y.setRange(0, 8192) # Same as above, type what you want but it will be clamped to canvas size in DraggableAsset
+        self.spin_item_y.setEnabled(False)
+        self.spin_item_y.setMaximumWidth(60)
+        self.spin_item_y.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.spin_item_y.valueChanged.connect(self.on_xy_spin_changed)
+        
+        dim_layout.addWidget(self.label_item_width)
+        dim_layout.addWidget(self.label_item_height)
+        dim_layout.addStretch() # Pushes the coordinate controls to the right side of the properties panel, while keeping dimensions on the left for better visual grouping. Looks cool 😎
+        dim_layout.addWidget(QLabel(" X:"))
+        dim_layout.addWidget(self.spin_item_x)
+        dim_layout.addWidget(QLabel(" Y:"))
+        dim_layout.addWidget(self.spin_item_y)
+        
+        
+        self.prop_layout.addLayout(dim_layout)
+
         sidebar_layout.addLayout(self.prop_layout)
         
         element_count_layout = QHBoxLayout()
         element_count_layout.addWidget(QLabel("Element Count:"))
-        # UI shows only the current element count; max is handled in script
+        # UI shows only the current element count; the max is handled in script to prevent from going over the limit, but showing it here for user awareness
         self.label_element_count = QLabel(f"0/{self.max_elements}")
         self.label_element_count.setMinimumWidth(80)
         element_count_layout.addWidget(self.label_element_count)
         sidebar_layout.addLayout(element_count_layout)
         
-        btn_export = QPushButton("EXPORT DAYZ IMAGESET")
-        btn_export.setStyleSheet("background-color: #ff5500; color: white; font-weight: bold; padding: 10px;")
-        btn_export.clicked.connect(self.export_imageset)
+        btn_export = QPushButton("EXPORT IMAGESET + EDDS")
+        btn_export.setStyleSheet("background-color: #00aa00; color: white; font-weight: bold; padding: 10px;")
+        btn_export.clicked.connect(self.export_imageset_and_edds)
         sidebar_layout.addWidget(btn_export)
 
         
@@ -688,7 +775,7 @@ class DayZImageset(QMainWindow):
         self.splitter.addWidget(self.view)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([350, 1250])
+        self.splitter.setSizes([250, 1250])
         
         content_layout.addWidget(self.splitter)
         
@@ -705,73 +792,75 @@ class DayZImageset(QMainWindow):
             # Move sidebar to the right by inserting it at index 1
             self.splitter.insertWidget(1, self.sidebar)
             self.btn_sidebar_pos.setText("Sidebar ←")
+            self.btn_sidebar_pos.setToolTip("Slide to the left!")
             self.sidebar_on_left = False
         else:
             # Move sidebar back to left by inserting at index 0
             self.splitter.insertWidget(0, self.sidebar)
             self.btn_sidebar_pos.setText("Sidebar →")
+            self.btn_sidebar_pos.setToolTip("Slide to the right!")
             self.sidebar_on_left = True
     
     def align_selected(self, align_type):
         selected_items = self.scene.selectedItems()
         if not selected_items: return
         
-        assets = [item for item in selected_items if isinstance(item, DraggableAsset)]
-        if not assets: return
+        elements = [item for item in selected_items if isinstance(item, DraggableAsset)]
+        if not elements: return
         
         align_to_canvas = self.check_align_to_canvas.isChecked()
         if align_to_canvas:
-            self._align_to_canvas(assets, align_type)
+            self._align_to_canvas(elements, align_type)
         else:
-            self._align_to_selection(assets, align_type)
+            self._align_to_selection(elements, align_type)
     
-    def _align_to_canvas(self, assets, align_type):
+    def _align_to_canvas(self, elements, align_type):
         if align_type == "top":
-            for asset in assets:
-                asset.setPos(asset.pos().x(), 0)       
+            for element in elements:
+                element.setPos(element.pos().x(), 0)       
         elif align_type == "left":
-            for asset in assets:
-                asset.setPos(0, asset.pos().y())
+            for element in elements:
+                element.setPos(0, element.pos().y())
         elif align_type == "right":
-            for asset in assets:
-                rect_width = asset.boundingRect().width()
-                asset.setPos(self.canvas_width - rect_width, asset.pos().y())
+            for element in elements:
+                rect_width = element.boundingRect().width()
+                element.setPos(self.canvas_width - rect_width, element.pos().y())
         elif align_type == "center":
-            for asset in assets:
-                rect_width = asset.boundingRect().width()
+            for element in elements:
+                rect_width = element.boundingRect().width()
                 center_x = (self.canvas_width - rect_width) / 2
-                asset.setPos(center_x, asset.pos().y())
+                element.setPos(center_x, element.pos().y())
         elif align_type == "bottom":
-            for asset in assets:
-                rect_height = asset.boundingRect().height()
-                asset.setPos(asset.pos().x(), self.canvas_height - rect_height)
+            for element in elements:
+                rect_height = element.boundingRect().height()
+                element.setPos(element.pos().x(), self.canvas_height - rect_height)
     
-    def _align_to_selection(self, assets, align_type):
-        if not assets: return
+    def _align_to_selection(self, elements, align_type):
+        if not elements: return
         
-        avg_x = sum(asset.pos().x() for asset in assets) / len(assets)
-        avg_y = sum(asset.pos().y() for asset in assets) / len(assets)
+        avg_x = sum(element.pos().x() for element in elements) / len(elements)
+        avg_y = sum(element.pos().y() for element in elements) / len(elements)
         
         if align_type == "top":
-            target_y = min(asset.pos().y() for asset in assets)
-            for asset in assets:
-                asset.setPos(asset.pos().x(), target_y)
+            target_y = min(element.pos().y() for element in elements)
+            for element in elements:
+                element.setPos(element.pos().x(), target_y)
         elif align_type == "left":
-            target_x = min(asset.pos().x() for asset in assets)
-            for asset in assets:
-                asset.setPos(target_x, asset.pos().y())
+            target_x = min(element.pos().x() for element in elements)
+            for element in elements:
+                element.setPos(target_x, element.pos().y())
         elif align_type == "right":
-            target_x = max(asset.pos().x() + asset.boundingRect().width() for asset in assets) - assets[0].boundingRect().width()
-            for asset in assets:
-                asset.setPos(target_x, asset.pos().y())
+            target_x = max(element.pos().x() + element.boundingRect().width() for element in elements) - elements[0].boundingRect().width()
+            for element in elements:
+                element.setPos(target_x, element.pos().y())
         elif align_type == "center":
-            target_x = avg_x - assets[0].boundingRect().width() / 2
-            for asset in assets:
-                asset.setPos(target_x, asset.pos().y())
+            target_x = avg_x - elements[0].boundingRect().width() / 2
+            for element in elements:
+                element.setPos(target_x, element.pos().y())
         elif align_type == "bottom":
-            target_y = max(asset.pos().y() + asset.boundingRect().height() for asset in assets) - assets[0].boundingRect().height()
-            for asset in assets:
-                asset.setPos(asset.pos().x(), target_y)
+            target_y = max(element.pos().y() + element.boundingRect().height() for element in elements) - elements[0].boundingRect().height()
+            for element in elements:
+                element.setPos(element.pos().x(), target_y)
         
     def on_assign_group_changed(self, index):
         """Handle group assignment via dropdown"""
@@ -797,8 +886,8 @@ class DayZImageset(QMainWindow):
         
         # Assign all selected items to the group
         for item in selected_items:
-            # Don't move groups themselves, only assets
-            if hasattr(item, 'asset_item') and item.asset_item:
+            # Don't move groups themselves, only elements
+            if hasattr(item, 'element_item') and item.element_item:
                 self.assign_item_to_group(item, group_name)
         
         # Reset dropdown
@@ -815,7 +904,7 @@ class DayZImageset(QMainWindow):
         
         for i in range(self.tree.topLevelItemCount()):
             group = self.tree.topLevelItem(i)
-            if not hasattr(group, 'asset_item') or not group.asset_item:
+            if not hasattr(group, 'element_item') or not group.element_item:
                 self.combo_assign_group.addItem(group.text(0))
         
         self.combo_assign_group.blockSignals(False)
@@ -823,8 +912,8 @@ class DayZImageset(QMainWindow):
     def on_tree_item_edited(self, item, column):
         if column == 0:
             new_name = item.text(0)
-            if hasattr(item, 'asset_item') and item.asset_item:
-                item.asset_item.name = new_name
+            if hasattr(item, 'element_item') and item.element_item:
+                item.element_item.name = new_name
             # If the currently selected item was edited in the tree, update the text box
             if self.tree.selectedItems() and self.tree.selectedItems()[0] == item:
                 self.edit_item_name.blockSignals(True)
@@ -840,22 +929,22 @@ class DayZImageset(QMainWindow):
                 item.setText(0, new_name) # Triggers on_tree_item_edited automatically
 
     def on_tree_items_moved(self):
-        self._update_all_asset_groups()
+        self._update_all_element_groups()
         self.refresh_group_dropdown()
     
-    def _update_all_asset_groups(self):
+    def _update_all_element_groups(self):
         for i in range(self.tree.topLevelItemCount()):
             group = self.tree.topLevelItem(i)
-            self._update_group_assets(group, group)
+            self._update_group_elements(group, group)
     
-    def _update_group_assets(self, item, group_parent):
+    def _update_group_elements(self, item, group_parent):
         for i in range(item.childCount()):
             child = item.child(i)
             if child.childCount() > 0:
-                self._update_group_assets(child, child)
+                self._update_group_elements(child, child)
             else:
-                if hasattr(child, 'asset_item') and child.asset_item:
-                    child.asset_item.group_item = group_parent
+                if hasattr(child, 'element_item') and child.element_item:
+                    child.element_item.group_item = group_parent
     
     def assign_item_to_group(self, item, group_name):
         target_group = None
@@ -871,8 +960,8 @@ class DayZImageset(QMainWindow):
         current_parent.removeChild(item)
         target_group.addChild(item)
         
-        if hasattr(item, 'asset_item') and item.asset_item:
-            item.asset_item.group_item = target_group
+        if hasattr(item, 'element_item') and item.element_item:
+            item.element_item.group_item = target_group
         self.tree.expandItem(target_group)
 
     def save_project(self):
@@ -895,13 +984,13 @@ class DayZImageset(QMainWindow):
                 "zoom": self.current_zoom_percentage
             },
             "tree": [],
-            "assets": {}
+            "elements": {}
         }
         
         # Serialize tree structure
         for i in range(self.tree.topLevelItemCount()):
             group = self.tree.topLevelItem(i)
-            project_data["tree"].append(self._serialize_tree_item(group, project_data["assets"]))
+            project_data["tree"].append(self._serialize_tree_item(group, project_data["elements"]))
         
         import json
         try:
@@ -913,33 +1002,37 @@ class DayZImageset(QMainWindow):
             QMessageBox.critical(self, "Save Error", f"Failed to write project file:\n{e}")
             return False
 
-    def _serialize_tree_item(self, item, assets_dict):
+    def _serialize_tree_item(self, item, elements_dict):
         """Recursively serialize tree item and its children"""
         node_data = {"name": item.text(0), "children": []}
         
-        # If this is an asset (not a group), store its data
-        if hasattr(item, 'asset_item') and item.asset_item:
-            asset = item.asset_item
+        # If this is an element (not a group), store its data
+        if hasattr(item, 'element_item') and item.element_item:
+            element = item.element_item
             if hasattr(item, 'filepath'):
-                asset_key = str(item.filepath)
-                assets_dict[asset_key] = {
+                element_key = str(item.filepath)
+                elements_dict[element_key] = {
                     "filepath": str(item.filepath),
-                    "name": asset.name,
-                    "x": asset.pos().x(),
-                    "y": asset.pos().y()
+                    "name": element.name,
+                    "x": element.pos().x(),
+                    "y": element.pos().y()
                 }
-                node_data["asset_path"] = asset_key
+                node_data["element_path"] = element_key
         
         # Serialize children
         for i in range(item.childCount()):
             child = item.child(i)
-            node_data["children"].append(self._serialize_tree_item(child, assets_dict))
+            node_data["children"].append(self._serialize_tree_item(child, elements_dict))
         
         return node_data
 
-    def load_project(self):
-        load_file, _ = QFileDialog.getOpenFileName(self, "Load Project State", "", "Imageset Project (*.json)")
-        if not load_file: 
+    def load_project(self, filepath=None):
+        if filepath is None:
+            load_file, _ = QFileDialog.getOpenFileName(self, "Load Project State", "", "Imageset Project (*.json)")
+        else:
+            load_file = filepath
+
+        if not load_file:
             return
             
         import json
@@ -1013,23 +1106,68 @@ class DayZImageset(QMainWindow):
         if self.show_gridlines:
             self.draw_gridlines()
         
-        # Load assets and tree structure
-        assets_dict = project_data.get("assets", {})
+        # Load elements and tree structure
+        elements_data = project_data.get("elements", [])
         tree_structure = project_data.get("tree", [])
-        missing_files_count = 0
         
-        for tree_node in tree_structure:
-            self._deserialize_tree_item(tree_node, None, assets_dict, missing_files_count)
+        # We use a list to pass by reference so the recursive function can update it
+        missing_files = [0] 
+        
+        if tree_structure:
+            # Format A: Native Editor JSON (Hierarchical Tree)
+            elements_dict = elements_data if isinstance(elements_data, dict) else {}
+            for tree_node in tree_structure:
+                self._deserialize_tree_item(tree_node, None, elements_dict, missing_files)
+                
+        elif isinstance(elements_data, list):
+            # Format B: Unpacker JSON (Flat List) - Dynamically construct the Tree
+            group_items = {}
+            for item_data in elements_data:
+                group_name = item_data.get("group", "ROOT (Ungrouped)")
+                
+                if group_name not in group_items:
+                    g_item = QTreeWidgetItem(self.tree, [group_name])
+                    if group_name != "ROOT (Ungrouped)":
+                        g_item.setFlags(g_item.flags() | Qt.ItemIsEditable)
+                    group_items[group_name] = g_item
+                    self.tree.expandItem(g_item)
+                
+                parent_item = group_items[group_name]
+                
+                filepath_str = item_data.get("filepath", "")
+                if filepath_str:
+                    filepath = Path(filepath_str)
+                    if filepath.exists():
+                        name = item_data.get("name", "Unknown")
+                        self.raw_images[str(filepath)] = Image.open(filepath).convert("RGBA")
+                        self.raw_images[name] = self.raw_images[str(filepath)]
+                        
+                        tree_item = QTreeWidgetItem(parent_item, [name])
+                        tree_item.setFlags(tree_item.flags() | Qt.ItemIsEditable)
+                        tree_item.filepath = filepath
+                        
+                        pixmap = QPixmap(str(filepath))
+                        element_item = DraggableAsset(name, pixmap, parent_item, self.canvas_width, self.canvas_height)
+                        element_item.setPos(item_data.get("x", 0.0), item_data.get("y", 0.0))
+                        element_item.tree_item = tree_item
+                        tree_item.element_item = element_item
+                        
+                        if self.show_outlines:
+                            element_item.set_outline(self.outline_color)
+                        
+                        self.scene.addItem(element_item)
+                        self.current_element_count += 1
+                    else:
+                        missing_files[0] += 1
         
         self.update_element_count()
         self.refresh_group_dropdown()
         
-        if missing_files_count > 0:
-            QMessageBox.warning(self, "Missing Source Files", f"Project loaded, but {missing_files_count} image file(s) were skipped.")
+        if missing_files[0] > 0:
+            QMessageBox.warning(self, "Missing Source Files", f"Project loaded, but {missing_files[0]} image file(s) were skipped.")
 
-    def _deserialize_tree_item(self, node_data, parent_item, assets_dict, missing_count):
+    def _deserialize_tree_item(self, node_data, parent_item, elements_dict, missing_files):
         """Recursively deserialize tree from structure"""
-        # Create tree item
         if parent_item is None:
             tree_item = QTreeWidgetItem(self.tree, [node_data["name"]])
         else:
@@ -1037,36 +1175,36 @@ class DayZImageset(QMainWindow):
         
         tree_item.setFlags(tree_item.flags() | Qt.ItemIsEditable)
         
-        # If this is an asset, load and place it
-        if "asset_path" in node_data:
-            asset_path = node_data["asset_path"]
-            if asset_path in assets_dict:
-                asset_data = assets_dict[asset_path]
-                filepath = Path(asset_data["filepath"])
+        # If this is an element, load and place it
+        if "element_path" in node_data:
+            element_path = node_data["element_path"]
+            if element_path in elements_dict:
+                element_data = elements_dict[element_path]
+                filepath = Path(element_data["filepath"])
                 
                 if filepath.exists():
-                    name = asset_data["name"]
+                    name = element_data["name"]
                     self.raw_images[str(filepath)] = Image.open(filepath).convert("RGBA")
                     self.raw_images[name] = self.raw_images[str(filepath)]
                     
                     tree_item.filepath = filepath
                     pixmap = QPixmap(str(filepath))
-                    asset_item = DraggableAsset(name, pixmap, parent_item or tree_item, self.canvas_width, self.canvas_height)
-                    asset_item.setPos(asset_data["x"], asset_data["y"])
-                    asset_item.tree_item = tree_item
-                    tree_item.asset_item = asset_item
+                    element_item = DraggableAsset(name, pixmap, parent_item or tree_item, self.canvas_width, self.canvas_height)
+                    element_item.setPos(element_data["x"], element_data["y"])
+                    element_item.tree_item = tree_item
+                    tree_item.element_item = element_item
                     
                     if self.show_outlines:
-                        asset_item.set_outline(self.outline_color)
+                        element_item.set_outline(self.outline_color)
                     
-                    self.scene.addItem(asset_item)
+                    self.scene.addItem(element_item)
                     self.current_element_count += 1
                 else:
-                    missing_count += 1
+                    missing_files[0] += 1
         
         # Recursively load children
         for child_node in node_data.get("children", []):
-            self._deserialize_tree_item(child_node, tree_item, assets_dict, missing_count)
+            self._deserialize_tree_item(child_node, tree_item, elements_dict, missing_files)
         
         self.tree.expandItem(tree_item)
 
@@ -1226,7 +1364,6 @@ class DayZImageset(QMainWindow):
         
         return snapped_pos
     
-    
     def on_grid_size_changed(self, value):
         self.grid_size = value
         if self.show_gridlines:
@@ -1321,6 +1458,21 @@ class DayZImageset(QMainWindow):
             (selected[0].parent() or root).removeChild(selected[0])
             self.refresh_group_dropdown()
 
+    def import_images(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Images to Import", "", "Image Files (*.png *.tga *.jpg *.bmp)")
+        if not files: return
+        
+        files_to_place = []
+        for file in files:
+            path = Path(file)
+            if path.is_file():
+                child = self._load_file_to_tree(path, None)
+                if child is not None:
+                    files_to_place.append((path, child))
+        
+        self.update_canvas_size()
+        self.auto_place_images(files_to_place)
+
     def import_folders(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Root Directory")
         if not directory: return
@@ -1360,6 +1512,113 @@ class DayZImageset(QMainWindow):
         self.update_canvas_size()
         self.auto_place_images(files_to_place)
 
+    def unpack_imageset_action(self):
+        # 1. Select the .imageset file
+        imageset_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Imageset to Unpack", "", "Imageset Files (*.imageset)"
+        )
+        if not imageset_path:
+            return
+
+        imageset_path = Path(imageset_path)
+        project_name = imageset_path.stem
+
+        # 2. Inform user and select output directory
+        QMessageBox.information(self, "Output Directory", 
+            f"Please select a destination folder.\n\nA new folder named '{project_name}' will be created inside it to hold your extracted assets.")
+            
+        output_parent_dir = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory", str(imageset_path.parent)
+        )
+        
+        if not output_parent_dir:
+            return
+            
+        # Construct the exact path where the new folder will live
+        output_dir = Path(output_parent_dir) / project_name
+
+        # 3. Run the converter
+        try:
+            converter = ImagesetConverter()
+        except FileNotFoundError as e:
+            QMessageBox.critical(self, "Converter Not Found", str(e))
+            return
+            
+        # Force the wrapper to use our specific output directory
+        result = converter.unpack_to_project(imageset_path, output_dir=str(output_dir))
+
+        if not result.get('success'):
+            QMessageBox.critical(self, "Unpack Failed", result.get('error', 'Unknown error'))
+            return
+
+        # 4. Prompt to replace open workspace (Only if canvas currently has items)
+        if self.scene.items():
+            reply = QMessageBox.question(
+                self, 
+                "Replace Workspace?", 
+                "Unpack successful!\n\nDo you want to clear your current workspace and load the newly unpacked imageset?",
+                QMessageBox.Yes | QMessageBox.No, 
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.No:
+                QMessageBox.information(self, "Success", f"Unpacked assets safely saved to:\n{output_dir}")
+                return
+
+        # 5. Load the new project to the canvas
+        json_file = output_dir / f"{project_name}.json"
+        if json_file.exists():
+            self.load_project(str(json_file))
+        else:
+            QMessageBox.warning(self, "Warning", "Could not locate the generated JSON project file.")
+
+    def _load_project_from_manifest(self, manifest, project_dir):
+        """Load project structure from manifest JSON."""
+        # Clear current project
+        self.tree.clear()
+        self.scene.clear()
+        self.raw_images.clear()
+        
+        # Group images by group name
+        groups_dict = {}
+        for img in manifest['images']:
+            group_name = img['group']
+            if group_name not in groups_dict:
+                groups_dict[group_name] = []
+            groups_dict[group_name].append(img)
+        
+        # Create tree structure and load images
+        for group_name in sorted(groups_dict.keys()):
+            group_item = QTreeWidgetItem(self.tree, [group_name])
+            
+            for img in groups_dict[group_name]:
+                # Load PNG image
+                png_path = project_dir / img['file']
+                if not png_path.exists():
+                    print(f"Warning: Image file not found: {png_path}")
+                    continue
+                
+                # Load image
+                pil_image = Image.open(str(png_path))
+                self.raw_images[img['name']] = pil_image
+                qpixmap = QPixmap.fromImage(
+                    self._convert_pil_to_qimage(pil_image)
+                )
+                
+                # Create element item
+                element = DraggableAsset(img['name'], qpixmap, group_item,
+                    canvas_width=self.canvas_width, canvas_height=self.canvas_height)
+                self.scene.addItem(element)
+                element.setPos(0, 0)  # Start at top-left
+                
+                # Create tree item
+                tree_item = QTreeWidgetItem(group_item, [img['name']])
+                tree_item.element_item = element
+                element.tree_item = tree_item
+                element.group_item = group_item
+        
+        self.tree.expandAll()
+        self.update_element_count()
+    
     def _load_file_to_tree(self, filepath, parent_node):
         try:
             name = filepath.stem.lower()
@@ -1367,7 +1626,7 @@ class DayZImageset(QMainWindow):
             
             child = QTreeWidgetItem(parent_node, [name])
             child.filepath = filepath
-            child.asset_item = None
+            child.element_item = None
             child.setFlags(child.flags() | Qt.ItemIsEditable)
             return child
         except Exception as e:
@@ -1396,15 +1655,15 @@ class DayZImageset(QMainWindow):
                 y_pos = 50
                 row_height = 0
             
-            asset_item = DraggableAsset(name, pixmap, group_item.parent() or group_item, self.canvas_width, self.canvas_height)
-            asset_item.setPos(x_pos, y_pos)
-            asset_item.tree_item = group_item
-            group_item.asset_item = asset_item
+            element_item = DraggableAsset(name, pixmap, group_item.parent() or group_item, self.canvas_width, self.canvas_height)
+            element_item.setPos(x_pos, y_pos)
+            element_item.tree_item = group_item
+            group_item.element_item = element_item
             
             if self.show_outlines:
-                asset_item.set_outline(self.outline_color)
+                element_item.set_outline(self.outline_color)
             
-            self.scene.addItem(asset_item)
+            self.scene.addItem(element_item)
             
             row_height = max(row_height, pixmap.height())
             x_pos += pixmap.width() + spacing
@@ -1439,7 +1698,7 @@ class DayZImageset(QMainWindow):
         self.tree.blockSignals(True)
         self.tree.clearSelection()
         
-        # Collect all selected assets and their tree items
+        # Collect all selected elements and their tree items
         tree_items_to_select = []
         for item in selected_items:
             if isinstance(item, DraggableAsset) and hasattr(item, 'tree_item') and item.tree_item:
@@ -1467,12 +1726,35 @@ class DayZImageset(QMainWindow):
                 self.edit_item_path.setText(str(item.filepath))
             else:
                 self.edit_item_path.setText("")
+                
+            # Update dimensions and spinboxes
+            element_item = getattr(item, 'element_item', None)
+            if element_item and isinstance(element_item, DraggableAsset):
+                self.label_item_width.setText(f"W: {int(element_item.pixmap().width())} px")
+                self.label_item_height.setText(f"H: {int(element_item.pixmap().height())} px")
+                
+                self._is_updating_spins = True
+                self.spin_item_x.setEnabled(True)
+                self.spin_item_y.setEnabled(True)
+                self.spin_item_x.setValue(int(element_item.scenePos().x()))
+                self.spin_item_y.setValue(int(element_item.scenePos().y()))
+                self._is_updating_spins = False
+            else:
+                self.label_item_width.setText("W: -")
+                self.label_item_height.setText("H: -")
+                self.spin_item_x.setEnabled(False)
+                self.spin_item_y.setEnabled(False)
         else:
             self.edit_item_name.setEnabled(False)
             self.edit_item_path.setText("")
             self.edit_item_name.blockSignals(True)
             self.edit_item_name.setText("")
             self.edit_item_name.blockSignals(False)
+            # Reset dimensions and spinboxes
+            self.label_item_width.setText("W: -")
+            self.label_item_height.setText("H: -")
+            self.spin_item_x.setEnabled(False)
+            self.spin_item_y.setEnabled(False)
         
         self.tree.blockSignals(False)
 
@@ -1510,29 +1792,29 @@ class DayZImageset(QMainWindow):
 
         if selected_items:
             # Support multi-select: process all selected tree items
-            first_asset_to_center = None
+            first_element_to_center = None
             
             for tree_item in selected_items:
-                # Check if this is a group (has children and no asset_item)
-                if tree_item.childCount() > 0 and (not hasattr(tree_item, 'asset_item') or not tree_item.asset_item):
+                # Check if this is a group (has children and no element_item)
+                if tree_item.childCount() > 0 and (not hasattr(tree_item, 'element_item') or not tree_item.element_item):
                     # This is a group - select all child items
                     self._select_group_children(tree_item, save_first=True)
-                    if not first_asset_to_center:
+                    if not first_element_to_center:
                         first_child = tree_item.child(0) if tree_item.childCount() > 0 else None
                         if first_child:
-                            first_asset_to_center = getattr(first_child, 'asset_item', None)
+                            first_element_to_center = getattr(first_child, 'element_item', None)
                 else:
                     # This is a single item
-                    asset_item = getattr(tree_item, 'asset_item', None)
-                    if isinstance(asset_item, DraggableAsset):
-                        asset_item.setSelected(True)
-                        asset_item.show_selection_overlay()
-                        if not first_asset_to_center:
-                            first_asset_to_center = asset_item
+                    element_item = getattr(tree_item, 'element_item', None)
+                    if isinstance(element_item, DraggableAsset):
+                        element_item.setSelected(True)
+                        element_item.show_selection_overlay()
+                        if not first_element_to_center:
+                            first_element_to_center = element_item
             
-            # Center view on first selected asset
-            if isinstance(first_asset_to_center, DraggableAsset):
-                self.view.centerOn(first_asset_to_center)
+            # Center view on first selected element
+            if isinstance(first_element_to_center, DraggableAsset):
+                self.view.centerOn(first_element_to_center)
     
     def _select_group_children(self, group_item, save_first=False):
         for i in range(group_item.childCount()):
@@ -1541,10 +1823,145 @@ class DayZImageset(QMainWindow):
             if child.childCount() > 0:
                 self._select_group_children(child, save_first=False)
             else:
-                asset_item = getattr(child, 'asset_item', None)
-                if isinstance(asset_item, DraggableAsset):
-                    asset_item.setSelected(True)
-                    asset_item.show_selection_overlay()
+                element_item = getattr(child, 'element_item', None)
+                if isinstance(element_item, DraggableAsset):
+                    element_item.setSelected(True)
+                    element_item.show_selection_overlay()
+
+    def show_about_dialog(self):
+        QMessageBox.about(self, "About", 
+            "DayZ Imageset Editor v1.2\n\n"
+            "Engineered by Strykar.\n"
+            "AI-assisted? You bet! 🤖\n\n"
+            "Dedicated to the trolls 🧌\n"
+            "Yes, AI had its grubby hand all up in this code. 🦾\n"
+            "No, it doesn't make the tool any less effective. "
+            "Stay salty! 😉")
+    
+    def show_help_dialog(self):
+        """Shows a custom help dialog with shortcuts, tips, and a clickable Discord link."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Help & Shortcuts")
+        dialog.setFixedSize(450, 600)
+        
+        # Main layout
+        layout = QVBoxLayout(dialog)
+        
+        # --- Create Tabs ---
+        tabs = QTabWidget()
+        
+        # Tab 1: Shortcuts
+        shortcuts_tab = QScrollArea()
+        shortcuts_tab.setWidgetResizable(True) # Allows the internal widget to scale with the scroll area
+        shortcuts_tab.setFrameShape(QScrollArea.NoFrame)
+        shortcuts_tab = QWidget()
+        shortcuts_layout = QVBoxLayout(shortcuts_tab)
+        shortcuts_text = """
+        <h3 style='color: #ff5500;'>Keyboard & Mouse Shortcuts</h3>
+        <table width='100%' cellpadding='6'>
+            <tr><td width='40%'><b>Ctrl + Z</b></td><td>Undo last action</td></tr>
+            <tr><td><b>Ctrl + Y / Ctrl+Shift+Z</b></td><td>Redo action</td></tr>
+            <tr><td><b>Delete</b></td><td>Delete selected element(s)</td></tr>
+            <tr><td><b>Ctrl + H / F1</b></td><td>Open this Help menu</td></tr>
+            <tr><td><b>Right-Click + Drag</b></td><td>Pan around the canvas</td></tr>
+            <tr><td><b>Scroll Wheel</b></td><td>Zoom in and out</td></tr>
+            <tr><td><b>Shift + Click/Drag</b></td><td>Select multiple elements</td></tr>
+        </table>
+        """
+        lbl_shortcuts = QLabel(shortcuts_text)
+        lbl_shortcuts.setWordWrap(True)
+        lbl_shortcuts.setStyleSheet("font-size: 14px;")
+        shortcuts_layout.addWidget(lbl_shortcuts)
+        shortcuts_layout.addStretch()
+        tabs.addTab(shortcuts_tab, "Shortcuts")
+        
+        # Tab 2: Tips & Cues
+        tips_tab = QScrollArea()
+        tips_tab.setWidgetResizable(True)
+        tips_tab.setFrameShape(QScrollArea.NoFrame)
+
+        tips_content = QWidget()
+        tips_layout = QVBoxLayout(tips_content)
+        tips_text = """
+        <h3 style='color: #ff5500;'>Pro Tips</h3>
+        <table width='100%' cellpadding='6' cellspacing='0'>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Sidebar Magic:</b> The sidebar can be resized by dragging its edge an it even collapses! Click the <b>Sidebar →</b> button to switch sides!</td>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Group Assignment:</b> Select multiple items in the tree, then use the <i>Assign to Group</i> dropdown to instantly organize your UI layers.</td>
+            </tr>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Canvas Alignment:</b> Check <i>Align to Canvas</i> before using the alignment buttons to snap your icons cleanly to the absolute edges of the canvas.</td>
+            </tr>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Precision Layouts:</b> Enable both <i>Snap to Grid</i> and <i>Snap to Elements</i> to easily align bounding boxes without manually typing coordinates.</td>
+            </tr>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Vanilla Compatibility:</b> When unpacking official .imageset files, the tool automatically figures out all the nested groups for you!</td>
+            </tr>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Custom Canvas Sizes:</b> Need a non-square layout? Select <i>Custom...</i> from the canvas size dropdown to enter any dimensions you want, up to 4096x4096.</td>
+            </tr>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Rename Element or Group:</b> Simply select the item in the tree and press F2 or double-click to edit its name. Changes will reflect in the properties panel.</td>
+            </tr>
+            <tr>
+                <td valign='top' width='20' style='font-size: 16px; padding-bottom: 10px;'>&bull;</td>
+                <td style='padding-bottom: 10px; line-height: 1.2;'><b>Select Groups:</b> Clicking a group in the hierarchy will select all its child elemets on the canvas, making it easy to move or edit entire sections of your UI at once.</td>
+            </tr>
+        </table>
+        """
+        lbl_tips = QLabel(tips_text)
+        lbl_tips.setWordWrap(True)
+        lbl_tips.setStyleSheet("font-size: 14px;")
+        tips_layout.addWidget(lbl_tips)
+        tips_layout.addStretch()
+
+        tips_tab.setWidget(tips_content)
+        tabs.addTab(tips_tab, "Tips & Tricks")
+        
+        layout.addWidget(tabs)
+        
+        # --- Bottom Section: Discord & Help ---
+        layout.addSpacing(10)
+        
+        help_text = QLabel("Need help, found a bug, or just want to chat?")
+        help_text.setAlignment(Qt.AlignCenter)
+        help_text.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(help_text)
+        
+
+        discord_url = "https://discord.gg/urfjtY8dy6"
+        link_layout = QHBoxLayout()
+        link_layout.setContentsMargins(50, 0, 50, 0)
+        
+        lbl_link = QLabel(f"<a href='{discord_url}' style='color: #4eb4f5;'>Join the DayZ Modders Discord</a>")
+        lbl_link.setOpenExternalLinks(True) 
+        lbl_link.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        
+        btn_copy = QPushButton("Copy URL")
+        btn_copy.setMaximumWidth(80)
+        # Put the URL in the clipboard when clickedn
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(discord_url))
+        
+        link_layout.addWidget(lbl_link)
+        link_layout.addWidget(btn_copy)
+        
+        layout.addLayout(link_layout)
+        layout.addSpacing(10)
+        
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(dialog.accept)
+        layout.addWidget(btn_close)
+        
+        dialog.exec_()
 
     def closeEvent(self, event):
         # Prevent prompt if the canvas is completely empty
@@ -1578,22 +1995,55 @@ class DayZImageset(QMainWindow):
         except Exception:
             pass
 
-    def export_imageset(self):
-        save_file, _ = QFileDialog.getSaveFileName(self, "Export Imageset", "", "DayZ Imageset (*.imageset)")
-        if not save_file: return
+    def _convert_pil_to_qimage(self, pil_image):
+        """Convert PIL image to QImage."""
+        pil_image = pil_image.convert("RGBA")
+        data = pil_image.tobytes("raw", "RGBA")
+        qimage = QImage(data, pil_image.width, pil_image.height, QImage.Format_RGBA8888)
+        return qimage
+
+    def export_imageset_and_edds(self):
+        """Export both imageset and EDDS files in the same location."""
+        # Ask for save directory
+        save_dir = QFileDialog.getExistingDirectory(self, "Select Export Directory")
+        if not save_dir:
+            return
         
-        out_path = Path(save_file)
-        sheet_name = out_path.stem.lower()
+        # Ask for filename
+        filename, ok = QInputDialog.getText(self, "Enter Filename", "Filename (without extension):")
+        if not ok or not filename:
+            return
         
+        filename = filename.replace(" ", "_").lower()
+        save_dir = Path(save_dir)
+        
+        # Calculate relative EDDS path from root drive
+        # Example: If save_dir is "E:/Tools/Test", relative path is "Tools/Test/filename.edds"
+        # NOTE: DayZ may require full resource path with GUID prefix, e.g.: "{GUID}Gui/imagesets/filename.edds"
+        try:
+            # Use anchor (drive + separator) for relative_to on Windows
+            # e.g., "E:\\" for absolute paths
+            relative_path = save_dir.relative_to(save_dir.anchor)
+            edds_relative = str(relative_path / f"{filename}.edds").replace("\\", "/")
+        except ValueError:
+            # Fallback if relative path fails
+            edds_relative = f"{filename}.edds"
+        
+        imageset_path = save_dir / f"{filename}.imageset"
+        edds_path = save_dir / f"{filename}.edds"
+        
+        # Build imageset content
         compiled_sheet = Image.new("RGBA", (self.canvas_width, self.canvas_height), (0, 0, 0, 0))
         
-        groups = {} 
+        groups = {}
         ungrouped = []
         
         for item in self.scene.items():
             if isinstance(item, DraggableAsset):
                 x, y = max(0, int(item.scenePos().x())), max(0, int(item.scenePos().y()))
-                w, h = int(item.boundingRect().width()), int(item.boundingRect().height())
+                # Use actual pixmap dimensions instead of boundingRect (which may include padding)
+                pixmap = item.pixmap()
+                w, h = pixmap.width(), pixmap.height()
                 
                 compiled_sheet.paste(self.raw_images[str(item.tree_item.filepath)], (x, y))
                 
@@ -1601,22 +2051,26 @@ class DayZImageset(QMainWindow):
                 
                 group_name = item.group_item.text(0)
                 if group_name == "ROOT (Ungrouped)":
-                    ungrouped.append(item_data[1:]) 
+                    ungrouped.append(item_data[1:])
                 else:
                     if group_name not in groups:
                         groups[group_name] = []
                     groups[group_name].append(item_data)
-                    
-        compiled_sheet.save(out_path.with_suffix(".png"), "PNG")
+        
+        # Create imageset content
+        # Calculate mpix based on max dimension (standard is log2 of largest dimension + 1)
+        max_dim = max(self.canvas_width, self.canvas_height)
+        import math
+        mpix = max(1, math.ceil(math.log2(max_dim)) - 6)  # Typically 1-3 for standard sizes
         
         output = [
             f"ImageSetClass {{",
-            f"\tName \"{sheet_name}\"",
+            f"\tName \"{filename}\"",
             f"\tRefSize {self.canvas_width} {self.canvas_height}",
             f"\tTextures {{",
             f"\t\tImageSetTextureClass {{",
-            f"\t\t\tmpix 1",
-            f"\t\t\tpath \"Fallout_DayZ_GUI/data/images/{sheet_name}.edds\"",
+            f"\t\t\tmpix {mpix}",
+            f"\t\t\tpath \"{edds_relative}\"",
             f"\t\t}}",
             f"\t}}",
             f"\tImages {{"
@@ -1635,15 +2089,132 @@ class DayZImageset(QMainWindow):
                 output.append(f"\t\t\t}}")
                 output.append(f"\t\t}}")
             output.append("\t}")
-            
+        
         output.append("}")
-
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(output))
+        
+        # Write imageset file
+        try:
+            with open(imageset_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(output))
+            print(f"Imageset saved: {imageset_path}")
+            print(f"  mpix: {mpix}")
+            print(f"  texture path: {edds_relative}")
+            print(f"  (If DayZ requires resource GUID prefix, manually edit the texture path in the .imageset file)")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save imageset:\n{str(e)}")
+            return
+        
+        # Convert compiled sheet to EDDS
+        temp_png = save_dir / f"_{filename}_temp.png"
+        try:
+            compiled_sheet.save(temp_png, "PNG")
+            print(f"Temporary PNG created: {temp_png}")
             
-        print("Export Complete!")
+            converter = ImagesetConverter()
+            result = converter.png_to_edds(
+                str(temp_png),
+                str(edds_path),
+                format_type="BGRA8",
+                mipmaps=1,
+                quality=5
+            )
+            
+            if not result['success']:
+                QMessageBox.critical(self, "EDDS Conversion Failed", result['error'])
+                temp_png.unlink(missing_ok=True)
+                return
+            
+            print(f"EDDS saved: {edds_path}")
+            temp_png.unlink(missing_ok=True)
+            
+            QMessageBox.information(self, "Export Successful",
+                f"Files saved successfully:\n\nImageset: {imageset_path}\nEDDS: {edds_path}")
+            print("Export Complete!")
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export EDDS:\n{str(e)}")
+            temp_png.unlink(missing_ok=True)
+    
+    def export_to_edds(self):
+        """Export the compiled sheet to EDDS format."""
+        save_file, _ = QFileDialog.getSaveFileName(self, "Export to EDDS", "", "DayZ EDDS (*.edds)")
+        if not save_file:
+            return
+        
+        out_path = Path(save_file)
+        
+        # First, create a PNG from the canvas
+        compiled_sheet = Image.new("RGBA", (self.canvas_width, self.canvas_height), (0, 0, 0, 0))
+        
+        for item in self.scene.items():
+            if isinstance(item, DraggableAsset):
+                x, y = max(0, int(item.scenePos().x())), max(0, int(item.scenePos().y()))
+                compiled_sheet.paste(self.raw_images[str(item.tree_item.filepath)], (x, y))
+        
+        # Save temporary PNG
+        temp_png = out_path.with_suffix(".png")
+        compiled_sheet.save(temp_png, "PNG")
+        
+        try:
+            converter = ImagesetConverter()
+        except FileNotFoundError as e:
+            QMessageBox.critical(self, "Converter Not Found", 
+                f"GO converter tool not found.\n\n{str(e)}\n\nPlease build the GO tool first.")
+            return
+        
+        # Convert PNG to EDDS using the converter
+        result = converter.png_to_edds(
+            str(temp_png),
+            str(out_path),
+            format_type="BGRA8",
+            mipmaps=1,
+            quality=5
+        )
+        
+        if not result['success']:
+            QMessageBox.critical(self, "Conversion Failed", result['error'])
+            temp_png.unlink(missing_ok=True)
+            return
+        
+        # Clean up temporary PNG
+        temp_png.unlink(missing_ok=True)
+        
+        QMessageBox.information(self, "Success", 
+            f"Successfully exported to EDDS:\n{out_path}")
+        print("EDDS Export Complete!")
+
+    def sync_spinboxes_to_item(self, item):
+        """Called by the canvas when dragging to update the UI boxes seamlessly"""
+        if isinstance(item, DraggableAsset):
+            self._is_updating_spins = True
+            self.spin_item_x.setValue(int(item.scenePos().x()))
+            self.spin_item_y.setValue(int(item.scenePos().y()))
+            self._is_updating_spins = False
+
+    def on_xy_spin_changed(self):
+        """Triggered when the user clicks the up/down arrows or types a number"""
+        if self._is_updating_spins:
+            return
+            
+        selected_items = self.scene.selectedItems()
+        if len(selected_items) == 1:
+            item = selected_items[0]
+            if isinstance(item, DraggableAsset):
+                new_x = self.spin_item_x.value()
+                new_y = self.spin_item_y.value()
+                new_pos = QPointF(new_x, new_y)
+                
+                # Push the custom merging command so that several clicks only creates 1 undo state
+                command = SpinBoxMoveCommand(item, item.scenePos(), new_pos)
+                self.undo_stack.push(command)
 
 if __name__ == "__main__":
+    # Beep-Boop-Beep - Starting the editor with a dash of humor and a sprinkle of AI magic! 🤖✨
+    print("---------------------------------------------------------")
+    print("DayZ Imageset Editor - Initializing...")
+    print("Developed by a human, powered by Artificial Intelligence.")
+    print("Criticism noted, but the code works just fine! ☕")
+    print("---------------------------------------------------------")
     app = QApplication(sys.argv)
     window = DayZImageset()
     window.show()
