@@ -18,6 +18,7 @@
 
 import sys
 import os
+import html
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QFileDialog, QTreeWidget, 
@@ -25,9 +26,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QGraphicsPixmapItem, QGraphicsRectItem, QColorDialog, QLabel, QComboBox,
                              QCheckBox, QSpinBox, QMessageBox, QSplitter, QDialog,
                              QInputDialog, QLineEdit, QUndoStack, QUndoCommand, QShortcut, QTabWidget,
-                             QScrollArea, QSizePolicy)
-from PyQt5.QtCore import Qt, QPointF
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QCursor, QKeySequence, QIcon, QImage
+                             QScrollArea, QSizePolicy, QToolTip)
+from PyQt5.QtCore import Qt, QPointF, QEvent
+from PyQt5.QtGui import QFontMetrics, QPixmap, QColor, QPainter, QCursor, QKeySequence, QIcon, QImage, QFont
 from PIL import Image
 from imagesetconv_wrapper import ImagesetConverter
 
@@ -114,6 +115,32 @@ class SpinBoxMoveCommand(QUndoCommand):
             return True
         return False
 
+class NudgeItemsCommand(QUndoCommand):
+    def __init__(self, items_moved, description="Nudge Items"):
+        super().__init__(description)
+        # Convert the list of tuples into a dictionary for easy merging
+        self.moved_dict = {item: {'old': old_p, 'new': new_p} for item, old_p, new_p in items_moved}
+
+    def undo(self):
+        for element, positions in self.moved_dict.items():
+            element.setPos(positions['old'])
+
+    def redo(self):
+        for element, positions in self.moved_dict.items():
+            element.setPos(positions['new'])
+
+    def id(self):
+        # Unique ID allows Qt to merge rapid arrow key presses into one undo step
+        return 998
+
+    def mergeWith(self, command):
+        # If the same items are being nudged, update our final destination coordinates
+        if command.id() == self.id() and self.moved_dict.keys() == command.moved_dict.keys():
+            for element in self.moved_dict:
+                self.moved_dict[element]['new'] = command.moved_dict[element]['new']
+            return True
+        return False
+
 class DraggableAsset(QGraphicsPixmapItem):
     def __init__(self, name, pixmap, group_item, canvas_width=4096, canvas_height=4096):
         super().__init__(pixmap)
@@ -122,6 +149,7 @@ class DraggableAsset(QGraphicsPixmapItem):
         self.canvas_width = canvas_width
         self.canvas_height = canvas_height
         self.outline_color = QColor("#ffffff")
+        self.is_key_item = False
         
         # Use ItemIsSelectable but NOT ItemIsMovable (we handle dragging manually)
         self.setFlag(QGraphicsPixmapItem.ItemIsSelectable)
@@ -159,9 +187,23 @@ class DraggableAsset(QGraphicsPixmapItem):
     
     def show_selection_overlay(self):
         self.selection_overlay.show()
+        self._update_overlay_color()
     
     def hide_selection_overlay(self):
         self.selection_overlay.hide()
+    
+    def _update_overlay_color(self):
+        """Update overlay color based on key item status"""
+        if self.is_key_item:
+            # Brighter, more opaque color for key item
+            self.selection_overlay.setBrush(QColor(150, 200, 255, 150))
+        else:
+            self.selection_overlay.setBrush(QColor(100, 150, 255, 80))
+    
+    def set_as_key_item(self, is_key=True):
+        """Mark this item as the key item for snapping/bounds"""
+        self.is_key_item = is_key
+        self._update_overlay_color()
     
     def itemChange(self, change, value):
         if change == QGraphicsPixmapItem.ItemPositionChange:
@@ -187,7 +229,10 @@ class ZoomableView(QGraphicsView):
         self.selection_rect_item = None
         # Drag tracking for proper offset handling
         self.drag_active = False
+        self.has_dragged = False # To differentiate between click and drag in mouseReleaseEvent
+        self.drag_start_pos = None
         self.drag_start_scene_pos = None
+        self.dragged_item = None # Track the single item being dragged for better performance when snapping to elements, since we only need to check that one item against others, not every selected item
         self.drag_start_item_positions = {}
         
     def mousePressEvent(self, event):
@@ -198,27 +243,42 @@ class ZoomableView(QGraphicsView):
             event.accept()
         elif event.button() == Qt.LeftButton:
             scene_pos = self.mapToScene(event.pos())
-            item_under_mouse = self.scene().itemAt(scene_pos, self.transform())
-            
+            item_under_mouse = self.scene().itemAt(scene_pos, self.transform())         
             # Drill down to the parent element if we hit the visual overlay or border
             if item_under_mouse and item_under_mouse.parentItem():
                 item_under_mouse = item_under_mouse.parentItem()
                 
             if isinstance(item_under_mouse, DraggableAsset):
-                # Record initial drag state for manual offset tracking
+                # --- Ctrl+Click: Change key item in multi-selection ---
+                if event.modifiers() & Qt.ControlModifier and item_under_mouse.isSelected():
+                    if self.workspace:
+                        self.workspace.set_key_item(item_under_mouse)
+                    event.accept()
+                    return
+                
+                # 1. Standard OS Selection Logic
+                if event.modifiers() & Qt.ShiftModifier:
+                    # Shift held: Toggle selection
+                    item_under_mouse.setSelected(not item_under_mouse.isSelected())
+                else:
+                    # Shift NOT held
+                    if not item_under_mouse.isSelected():
+                        # Clicked an unselected item: Clear others, select this one
+                        self.scene().clearSelection()
+                        item_under_mouse.setSelected(True)
+                    # If it IS already selected, do nothing! Keep the group selected so we can drag it.
+
+                # 2. Record initial drag state for manual offset tracking
                 self.drag_active = True
+                self.has_dragged = False
+                self.dragged_item = item_under_mouse
+                self.drag_start_pos = event.pos()
                 self.drag_start_scene_pos = scene_pos
                 self.drag_start_item_positions = {
                     item: item.pos() for item in self.scene().selectedItems() 
                     if isinstance(item, DraggableAsset)
                 }
                 
-                # Let PyQt handle selection
-                if not (item_under_mouse.isSelected() and event.modifiers() & Qt.ShiftModifier == 0):
-                    if not (event.modifiers() & Qt.ShiftModifier):
-                        self.scene().clearSelection()
-                
-                item_under_mouse.setSelected(True)
                 event.accept()
                 return
                 
@@ -239,24 +299,80 @@ class ZoomableView(QGraphicsView):
             self.pan_start = event.pos()
             event.accept()
         elif self.drag_active and self.drag_start_scene_pos is not None:
-            # Manual drag: translate mouse movement to item movement
-            current_scene_pos = self.mapToScene(event.pos())
-            delta = current_scene_pos - self.drag_start_scene_pos
-            
-            # Move all selected items by the same delta
-            for item, start_pos in self.drag_start_item_positions.items():
-                new_pos = start_pos + delta
-                
-                # Apply snapping if enabled
-                if self.workspace:
-                    if self.workspace.snap_to_grid_enabled:
-                        new_pos = self.workspace.snap_to_grid(new_pos)
-                    if self.workspace.snap_to_elements_enabled:
-                        new_pos = self.workspace.snap_to_elements(item, new_pos)
-                
-                item.setPos(new_pos)
+            # Prevent accidental dragging from micro-movements during clicks by enforcing a small threshold before we consider it an official drag
+            if not self.has_dragged and (event.pos() - self.drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+                return
 
-                # --- Syncing Spinboxes during mouse drag ---
+            self.has_dragged = True # Threshold crossed, we are officially dragging!
+
+            current_scene_pos = self.mapToScene(event.pos())
+            raw_delta = current_scene_pos - self.drag_start_scene_pos
+            
+            # 1. Determine group bounds to calculate maximum allowable delta (Canvas Clamping)
+            min_start_x = min(pos.x() for pos in self.drag_start_item_positions.values())
+            min_start_y = min(pos.y() for pos in self.drag_start_item_positions.values())
+            max_start_x = max(pos.x() + item.boundingRect().width() for item, pos in self.drag_start_item_positions.items())
+            max_start_y = max(pos.y() + item.boundingRect().height() for item, pos in self.drag_start_item_positions.items())
+            
+            if self.workspace:
+                max_allowed_delta_x = self.workspace.canvas_width - max_start_x
+                max_allowed_delta_y = self.workspace.canvas_height - max_start_y
+            else:
+                max_allowed_delta_x = float('inf')
+                max_allowed_delta_y = float('inf')
+                
+            min_allowed_delta_x = -min_start_x
+            min_allowed_delta_y = -min_start_y
+            
+            # 2. Identify the anchor for snapping (Key Item > Dragged Item)
+            anchor_item = None
+            if self.workspace and self.workspace.key_item and self.workspace.key_item in self.drag_start_item_positions:
+                anchor_item = self.workspace.key_item
+            else:
+                anchor_item = self.dragged_item
+
+            true_delta = raw_delta
+
+            if anchor_item and self.workspace:
+                anchor_start_pos = self.drag_start_item_positions[anchor_item]
+                anchor_rect = anchor_item.boundingRect()
+                intended_anchor_pos = anchor_start_pos + raw_delta
+                snapped_anchor_pos = QPointF(intended_anchor_pos)
+                
+                # Grid Snapping (Directional based on raw_delta)
+                if self.workspace.snap_to_grid_enabled:
+                    grid = self.workspace.grid_size
+                    if grid > 0:
+                        # X-Axis Snapping
+                        if raw_delta.x() > 0: # Dragging Right -> Snap Right Edge
+                            right_edge = snapped_anchor_pos.x() + anchor_rect.width()
+                            snapped_anchor_pos.setX(round(right_edge / grid) * grid - anchor_rect.width())
+                        else: # Dragging Left / Neutral -> Snap Left Edge
+                            snapped_anchor_pos.setX(round(snapped_anchor_pos.x() / grid) * grid)
+                            
+                        # Y-Axis Snapping
+                        if raw_delta.y() > 0: # Dragging Down -> Snap Bottom Edge
+                            bottom_edge = snapped_anchor_pos.y() + anchor_rect.height()
+                            snapped_anchor_pos.setY(round(bottom_edge / grid) * grid - anchor_rect.height())
+                        else: # Dragging Up / Neutral -> Snap Top Edge
+                            snapped_anchor_pos.setY(round(snapped_anchor_pos.y() / grid) * grid)
+                
+                # Element Snapping
+                if self.workspace.snap_to_elements_enabled:
+                    snapped_anchor_pos = self.workspace.snap_to_elements(anchor_item, snapped_anchor_pos)
+                    
+                true_delta = snapped_anchor_pos - anchor_start_pos
+            
+            # 3. Clamp true_delta to ensure the ENTIRE group stays within the canvas bounds
+            clamped_delta_x = max(min_allowed_delta_x, min(true_delta.x(), max_allowed_delta_x))
+            clamped_delta_y = max(min_allowed_delta_y, min(true_delta.y(), max_allowed_delta_y))
+            final_delta = QPointF(clamped_delta_x, clamped_delta_y)
+            
+            # 4. Apply the final, safe delta to all selected items
+            for item, start_pos in self.drag_start_item_positions.items():
+                item.setPos(start_pos + final_delta)
+
+            # --- Syncing Spinboxes during mouse drag ---
             if self.workspace and len(self.scene().selectedItems()) == 1:
                 self.workspace.sync_spinboxes_to_item(self.scene().selectedItems()[0])
             
@@ -288,20 +404,28 @@ class ZoomableView(QGraphicsView):
             self.setCursor(QCursor(Qt.ArrowCursor))
             event.accept()
         elif event.button() == Qt.LeftButton:
-            # Handle end of drag: create undo command if items moved
             if self.drag_active and self.drag_start_item_positions:
-                # Check if any items actually moved
-                items_moved = []
-                for item, start_pos in self.drag_start_item_positions.items():
-                    if item.pos() != start_pos:
-                        items_moved.append((item, start_pos, item.pos()))
-                
-                # Create undo/redo command if items moved
-                if items_moved and self.workspace:
-                    self.workspace.undo_stack.push(MoveItemsCommand(items_moved))
+                if self.has_dragged:
+                    # User purposefully dragged the mouse
+                    items_moved = []
+                    for item, start_pos in self.drag_start_item_positions.items():
+                        if item.pos() != start_pos:
+                            items_moved.append((item, start_pos, item.pos()))
+                    
+                    if items_moved and self.workspace:
+                        self.workspace.undo_stack.push(MoveItemsCommand(items_moved))
+                else:
+                    # User clicked without moving the mouse, treat it as a selection action 
+                    # If Shift/Ctrl wasn't held, isolate the selection to the clicked item
+                    if not (event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)) and self.dragged_item:
+                        self.scene().clearSelection()
+                        self.dragged_item.setSelected(True)
                 
                 self.drag_active = False
+                self.has_dragged = False
+                self.drag_start_pos = None
                 self.drag_start_scene_pos = None
+                self.dragged_item = None
                 self.drag_start_item_positions = {}
             
             # Handle selection box
@@ -315,9 +439,23 @@ class ZoomableView(QGraphicsView):
                 from PyQt5.QtCore import QRectF
                 selection_area = QRectF(rect_left, rect_top, rect_right - rect_left, rect_bottom - rect_top)
                 
+                # Track items for key item selection
+                closest_item = None
+                closest_distance = float('inf')
+                
                 for item in self.scene().items(selection_area):
                     if isinstance(item, DraggableAsset):
                         item.setSelected(True)
+                        # Find closest item to cursor for key item
+                        item_center = item.pos() + QPointF(item.boundingRect().width() / 2, item.boundingRect().height() / 2)
+                        distance = (current_pos - item_center).manhattanLength()
+                        if distance < closest_distance:
+                            closest_distance = distance
+                            closest_item = item
+                
+                # Set the closest item as key item
+                if closest_item and self.workspace:
+                    self.workspace.set_key_item(closest_item)
                 
                 if self.selection_rect_item:
                     self.scene().removeItem(self.selection_rect_item)
@@ -388,9 +526,61 @@ class ZoomableView(QGraphicsView):
                         self.scene().removeItem(element)
                     self.workspace.update_element_count()
             event.accept()
+
+        # --- NEW ARROW KEY NUDGE LOGIC ---
+        elif event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right) and self.underMouse():
+            selected_items = [item for item in self.scene().selectedItems() if isinstance(item, DraggableAsset)]
+            if not selected_items:
+                super().keyPressEvent(event)
+                return
+                
+            # Determine intended movement delta (10px if Shift is held, otherwise 1px)
+            step = 10 if event.modifiers() & Qt.ShiftModifier else 1
+            raw_dx, raw_dy = 0, 0
+            
+            if event.key() == Qt.Key_Up: raw_dy = -step
+            elif event.key() == Qt.Key_Down: raw_dy = step
+            elif event.key() == Qt.Key_Left: raw_dx = -step
+            elif event.key() == Qt.Key_Right: raw_dx = step
+            
+            # --- GROUP BOUNDARY CLAMPING ---
+            # 1. Find the outermost edges of the entire selection
+            min_x = min(item.pos().x() for item in selected_items)
+            min_y = min(item.pos().y() for item in selected_items)
+            max_x = max(item.pos().x() + item.boundingRect().width() for item in selected_items)
+            max_y = max(item.pos().y() + item.boundingRect().height() for item in selected_items)
+            
+            canvas_w = self.workspace.canvas_width if self.workspace else 4096
+            canvas_h = self.workspace.canvas_height if self.workspace else 4096
+            
+            # 2. Clamp the delta so no item can push past the canvas boundaries
+            # min() prevents pushing past the right/bottom limits. max() prevents pushing past the left/top limits (0).
+            clamped_dx = max(-min_x, min(raw_dx, canvas_w - max_x))
+            clamped_dy = max(-min_y, min(raw_dy, canvas_h - max_y))
+            
+            # If the group is completely against the wall and can't move, exit early
+            if clamped_dx == 0 and clamped_dy == 0:
+                event.accept()
+                return
+
+            # 3. Apply the safe, uniform delta to all items
+            items_moved = []
+            for item in selected_items:
+                start_pos = item.pos()
+                new_pos = start_pos + QPointF(clamped_dx, clamped_dy)
+                item.setPos(new_pos)
+                items_moved.append((item, start_pos, new_pos))
+            
+            if items_moved and self.workspace:
+                self.workspace.undo_stack.push(NudgeItemsCommand(items_moved))
+                
+                # Sync the spinboxes if only one item is selected
+                if len(selected_items) == 1:
+                    self.workspace.sync_spinboxes_to_item(selected_items[0])
+                    
+            event.accept()
         else:
             super().keyPressEvent(event)
-
 
 class CustomSizeDialog(QDialog):
     def __init__(self, current_w, current_h, parent=None):
@@ -433,6 +623,7 @@ class DayZImageset(QMainWindow):
         self.setWindowTitle("DayZ Imageset Editor - Make something cool for DayZ! 🎨🖌")
         self.setWindowIcon(QIcon(resource_path("resources/app_icon.ico")))
         self.setGeometry(100, 100, 1600, 900)
+        self.setFocusPolicy(Qt.StrongFocus)  # Allow main window to receive key events
         
         self.raw_images = {}
         self.canvas_width = 4096
@@ -452,6 +643,9 @@ class DayZImageset(QMainWindow):
         self.max_elements = 1000
         self.current_element_count = 0
         self._is_updating_spins = False # Flag to prevent recursive updates when syncing spinboxes during drag
+        self.key_item = None # Track the key item for snapping/bounds checking
+        self.tooltips_enabled = True
+        QApplication.instance().installEventFilter(self) # Intercepts all app events
 
         # --- Undo / Redo Setup ---
         self.undo_stack = QUndoStack(self)
@@ -459,12 +653,103 @@ class DayZImageset(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Z"), self, self.undo_stack.undo)
         QShortcut(QKeySequence("Ctrl+Y"), self, self.undo_stack.redo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self.undo_stack.redo)
+        # --- File & Workspace Shortcuts ---
+        QShortcut(QKeySequence("Ctrl+N"), self, self.clear_workspace)
+        QShortcut(QKeySequence("Ctrl+O"), self, lambda: self.load_project())
+        QShortcut(QKeySequence("Ctrl+S"), self, self.save_project)
+        QShortcut(QKeySequence("Ctrl+E"), self, self.export_imageset_and_edds)
+        QShortcut(QKeySequence("Ctrl+T"), self, self.toggle_tooltips_action)
         # --- Help me Obi Wan Kenobi, you're my only hope! 🙏 ---
         QShortcut(QKeySequence("Ctrl+H"), self, self.show_help_dialog)
         QShortcut(QKeySequence("F1"), self, self.show_help_dialog)
+        # --- About Dialog Shortcut ---
+        QShortcut(QKeySequence("Ctrl+F1"), self, self.show_about_dialog)
+        QShortcut(QKeySequence("Ctrl+I"), self, self.show_about_dialog)
 
         self._build_ui()
         self._apply_dark_theme()
+
+    def keyPressEvent(self, event):
+        """Handle key press events at the main window level for deletion, zooming, and group actions."""
+        
+        # --- 1. HANDLE DELETE KEY ---
+        if event.key() == Qt.Key_Delete:
+            # Check if tree has selected items
+            selected_tree_items = self.tree.selectedItems()
+            if selected_tree_items:
+                # Delegate to graphics view to handle deletion of selected elements
+                # First, ensure the corresponding scene items are selected
+                self.on_tree_selection_changed()
+                # Now trigger delete via the graphics view
+                self.view.keyPressEvent(event)
+                return
+            # If no tree selection, let graphics view handle it directly
+            self.view.view_keyPressEvent(event) if hasattr(self.view, 'view_keyPressEvent') else self.view.keyPressEvent(event)
+            event.accept()
+            return
+
+        # --- 2. HANDLE CONTROL MODIFIER SHORTCUTS (Zoom / Groups) ---
+        if event.modifiers() & Qt.ControlModifier:
+            
+            # Handle Zoom In / Add Group (= key or physical + key)
+            if event.key() in (Qt.Key_Equal, Qt.Key_Plus):
+                if event.modifiers() & Qt.ShiftModifier:
+                    self.add_manual_group()       # Ctrl + Shift + =  (Main Row) or Ctrl + Shift + + (Numpad)
+                else:
+                    self.zoom_in()                # Ctrl + = (Main Row) or Ctrl + + (Numpad)
+                event.accept()
+                return
+            
+            # Handle Zoom Out / Remove Group (- numkey or physical - key)
+            elif event.key() in (Qt.Key_Minus, Qt.Key_Underscore):
+                if event.modifiers() & Qt.ShiftModifier:
+                    self.remove_manual_group()    # Ctrl + Shift + - (Main Row Layout)
+                else:
+                    self.zoom_out()               # Ctrl + - (Main Row Layout)
+                event.accept()
+                return
+
+        # --- 3. FALLBACK FOR UNHANDLED KEYS ---
+        # If the key pressed wasn't Delete or any of our Ctrl combinations, 
+        # let it pass through to standard Qt navigation controls safely.
+        super().keyPressEvent(event)
+    
+    def eventFilter(self, obj, event):
+        """Global event filter to intercept and block tooltips when disabled."""
+        if event.type() == QEvent.ToolTip and not self.tooltips_enabled:
+            return True # Returning True consumes the event, blocking the tooltip from showing
+        return super().eventFilter(obj, event)
+
+    def toggle_tooltips_action(self):
+        """Toggle tooltips via shortcut and provide clean visual feedback."""
+        self.tooltips_enabled = not self.tooltips_enabled
+        
+        # NEW show a message that vanishes after 3 seconds in the status bar
+        # Plan to add a permanent status indicator in the UI in the future, but this is a good start for now and doesn't require extra UI space
+        status = "ENABLED" if self.tooltips_enabled else "DISABLED"
+        self.statusBar().showMessage(f"Global Tooltips {status}", 3000)
+
+    def set_widget_tooltip(self, widget, tip, min_width=450):
+        """Set a rich-text tooltip with a fixed minimum width and wrapping."""
+        if not tip:
+            widget.setToolTip("")
+            return
+
+        fm = QFontMetrics(widget.font())
+        tip_width = fm.horizontalAdvance(tip)
+        escaped_tip = html.escape(tip)
+
+        if tip_width <= min_width:
+            tooltip_text = escaped_tip
+        else:
+            tooltip_text = escaped_tip
+
+        formatted_tooltip = (
+            "<style>p { margin: 0; }</style>"
+            f"<p style='white-space:pre-wrap; width:{min_width}px;'>"
+            f"{tooltip_text}</p>"
+        )
+        widget.setToolTip(formatted_tooltip)
 
     def _build_ui(self):
         main_widget = QWidget()
@@ -472,6 +757,7 @@ class DayZImageset(QMainWindow):
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+        QToolTip.setFont(QFont('Verdana', 9)) # Global tooltip font for that sweet sweet readability
 
         # --- Top Toolbar (Split into two rows for cleaner UI) ---
         top_toolbar = QWidget()
@@ -509,10 +795,12 @@ class DayZImageset(QMainWindow):
         row1_layout.addWidget(self.combo_size)
         
         btn_custom_size = QPushButton("Custom Size")
+        self.set_widget_tooltip(btn_custom_size, "Set a custom canvas size")
         btn_custom_size.clicked.connect(self.open_custom_size_dialog)
         row1_layout.addWidget(btn_custom_size)
         
         btn_bg_color = QPushButton("Canvas Color")
+        self.set_widget_tooltip(btn_bg_color, "Change the background color of the canvas. \n\nThis does NOT affect the actual imageset background color, just the editor's canvas for better visibility while working.")
         btn_bg_color.clicked.connect(self.change_bg_color)
         row1_layout.addWidget(btn_bg_color)
         
@@ -557,19 +845,21 @@ class DayZImageset(QMainWindow):
 
         # Help button
         btn_help = QPushButton("Help")
+        btn_help.setToolTip("Controls & Shortcuts (Ctrl+H / F1)")
         btn_help.setMaximumWidth(80)
         btn_help.clicked.connect(self.show_help_dialog)
         row1_layout.addWidget(btn_help)
 
         # About button
         btn_about = QPushButton("About")
+        btn_about.setToolTip("About DayZ ImageSet Editor")
         btn_about.setMaximumWidth(80)
         btn_about.clicked.connect(self.show_about_dialog)
         row1_layout.addWidget(btn_about)
         
         # Row 2: Overlays and Snapping
         row2_layout = QHBoxLayout()
-        self.check_snap_grid = QCheckBox("Snap to Grid")
+        self.check_snap_grid = QCheckBox("Snap to Grid ")
         self.check_snap_grid.toggled.connect(self.on_snap_grid_toggled)
         row2_layout.addWidget(self.check_snap_grid)
         
@@ -580,6 +870,10 @@ class DayZImageset(QMainWindow):
         self.spin_grid_size.setValue(32)
         self.spin_grid_size.setSingleStep(4)
         self.spin_grid_size.valueChanged.connect(self.on_grid_size_changed)
+        self.set_widget_tooltip(
+            self.spin_grid_size,
+            "Set the size of the grid cells for snapping. \n\nSmaller values allow for more precise alignment, while larger values provide a coarser grid."
+        )
         row2_layout.addWidget(self.spin_grid_size)
         
         row2_layout.addWidget(QLabel(" |  "))
@@ -593,6 +887,10 @@ class DayZImageset(QMainWindow):
         row2_layout.addWidget(self.check_snap_elements)
         
         self.check_show_outlines = QCheckBox("Show Outlines")
+        self.set_widget_tooltip(
+            self.check_show_outlines,
+            "Toggle outlines around each element to help distinguish them from the canvas and each other. \n\nOutline color can be customized with the button to the right!"
+        )
         self.check_show_outlines.toggled.connect(self.on_show_outlines_toggled)
         row2_layout.addWidget(self.check_show_outlines)
         
@@ -601,15 +899,15 @@ class DayZImageset(QMainWindow):
         row2_layout.addWidget(btn_outline_color)
 
         # Move view controls down here
-        row2_layout.addWidget(QLabel(" |  "))
+        row2_layout.addWidget(QLabel(" | "))
         zoom_ctrl_layout = QHBoxLayout()
         btn_zoom_out = QPushButton("-")
-        btn_zoom_out.setMaximumWidth(40)
+        btn_zoom_out.setMinimumWidth(24)
         btn_zoom_out.clicked.connect(self.zoom_out)
         zoom_ctrl_layout.addWidget(btn_zoom_out)
         
         btn_zoom_in = QPushButton("+")
-        btn_zoom_in.setMaximumWidth(40)
+        btn_zoom_in.setMinimumWidth(24)
         btn_zoom_in.clicked.connect(self.zoom_in)
         zoom_ctrl_layout.addWidget(btn_zoom_in)
         
@@ -643,23 +941,54 @@ class DayZImageset(QMainWindow):
         sidebar_layout = QVBoxLayout(self.sidebar)
         
         btn_layout = QHBoxLayout()
+        btn_clear_all = QPushButton("Clear Workspace")
+        btn_clear_all.setStyleSheet("background-color: #aa0000; color: white;") # Big red button for a big red action
+        self.set_widget_tooltip(
+            btn_clear_all,
+            "Clear everything from the workspace! Use with caution, this cannot be undone. \nMake sure to save your project first if you want to keep your work."
+        )
+        btn_clear_all.setMaximumWidth(120)
+        btn_clear_all.clicked.connect(self.clear_workspace)
         btn_import_image = QPushButton("Import Image(s)")
+        self.set_widget_tooltip(
+            btn_import_image,
+            "Import one or more images to the workspace. \n\nEach image will become a separate element that you can arrange and export as part of your .imageset!"
+        )
+        btn_import_image.setMaximumWidth(250)
         btn_import_image.clicked.connect(self.import_images)
-        btn_import_folder = QPushButton("Import Folder(Subfolders as Groups)")
+        btn_import_folder = QPushButton("Import Folder(s)")
+        self.set_widget_tooltip(
+            btn_import_folder,
+            "Import one or more folders containing images to the workspace. \n\nSubfolders will be treated as groups, allowing you to maintain your organization and hierarchy from your filesystem within the .imageset structure!"
+        )
+        btn_import_folder.setMaximumWidth(250)
         btn_import_folder.clicked.connect(self.import_folders)
+        btn_layout.addWidget(btn_clear_all)
+        btn_layout.addStretch() # Pushes the clear button to the left and the import buttons to the right, Gotta keep em separated for that sweet sweet UX balance 😎
         btn_layout.addWidget(btn_import_image)
         btn_layout.addWidget(btn_import_folder)
         sidebar_layout.addLayout(btn_layout)
         btn_unpack = QPushButton("Unpack .imageset to Workspace")
-        btn_unpack.setToolTip("Import an existing .imageset and its associated .edds file, unpacking all elements into the workspace for editing. Great for modifying existing assets or using them as a base for new creations!")
-        btn_unpack.setStyleSheet("background-color: #2E8B57; color: white;") # Make it distinct
+        self.set_widget_tooltip(
+            btn_unpack,
+            "Import an existing .imageset and its associated .edds file, unpacking all elements into the workspace for editing. \nGreat for modifying existing assets or using them as a base for new creations!"
+        )
+        btn_unpack.setStyleSheet("background-color: #2E8B57; color: white; padding: 8px;")
         btn_unpack.clicked.connect(self.unpack_imageset_action)
         sidebar_layout.addWidget(btn_unpack)
         
         proj_btn_layout = QHBoxLayout()
         btn_save_proj = QPushButton("Save Project")
+        self.set_widget_tooltip(
+            btn_save_proj,
+            "Save your current workspace as a project file (.json), allowing you to preserve your progress and come back to it later. \n\nThis saves all your elements, groups, positions, and settings in a single file for easy loading! \nCtrl+S"
+        )
         btn_save_proj.clicked.connect(self.save_project)
         btn_load_proj = QPushButton("Load Project")
+        self.set_widget_tooltip(
+            btn_load_proj,
+            "Load a previously saved project file (.json) to restore your workspace to that state. \n\nPerfect for continuing work on existing projects or using them as templates for new ones! \nCtrl+O"
+        )
         btn_load_proj.clicked.connect(lambda: self.load_project())
         proj_btn_layout.addWidget(btn_save_proj)
         proj_btn_layout.addWidget(btn_load_proj)
@@ -668,8 +997,10 @@ class DayZImageset(QMainWindow):
         group_ctrl_layout = QHBoxLayout()
         btn_add_group = QPushButton("+ Add Group")
         btn_add_group.clicked.connect(self.add_manual_group)
+        btn_add_group.setToolTip("Ctrl+Shift +")
         btn_rem_group = QPushButton("- Remove Group")
-        btn_rem_group.clicked.connect(self.remove_tree_item)
+        btn_rem_group.clicked.connect(self.remove_manual_group)
+        btn_rem_group.setToolTip("Ctrl+Shift -")
         group_ctrl_layout.addWidget(btn_add_group)
         group_ctrl_layout.addWidget(btn_rem_group)
         sidebar_layout.addLayout(group_ctrl_layout)
@@ -677,6 +1008,10 @@ class DayZImageset(QMainWindow):
         sidebar_layout.addWidget(QLabel("Layer Hierarchy:"))
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Structure"])
+        self.set_widget_tooltip(
+            self.tree,
+            "Drag and drop items to organize them within the layer hierarchy. Double click an item to rename it. Select a group and use the 'Assign to Group' dropdown to quickly move items into that group. \n\nThe hierarchy you create here will be reflected in the exported .imageset structure, allowing you to maintain organization and grouping for your assets!"
+        )
         self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
         self.tree.setDragDropMode(QTreeWidget.InternalMove)
         self.tree.setDefaultDropAction(Qt.MoveAction)
@@ -732,6 +1067,7 @@ class DayZImageset(QMainWindow):
         self.spin_item_y.setEnabled(False)
         self.spin_item_y.setMaximumWidth(60)
         self.spin_item_y.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.spin_item_y.setValue(0)
         self.spin_item_y.valueChanged.connect(self.on_xy_spin_changed)
         
         dim_layout.addWidget(self.label_item_width)
@@ -757,6 +1093,9 @@ class DayZImageset(QMainWindow):
         
         btn_export = QPushButton("EXPORT IMAGESET + EDDS")
         btn_export.setStyleSheet("background-color: #00aa00; color: white; font-weight: bold; padding: 10px;")
+        btn_export.setToolTip(
+            "Export your workspace as a .imageset file along with its associated .edds file, ready to be used in DayZ! \n\nMake sure to save your project before exporting if you want to keep an editable version of your work! \nCtrl+E"
+        )
         btn_export.clicked.connect(self.export_imageset_and_edds)
         sidebar_layout.addWidget(btn_export)
 
@@ -786,6 +1125,23 @@ class DayZImageset(QMainWindow):
         self.update_canvas_size()
 
     # --- Sidebar Management ---
+    def set_key_item(self, item):
+        """Set the key item and update visual feedback"""
+        # Clear previous key item
+        if self.key_item is not None and self.key_item != item:
+            self.key_item.set_as_key_item(False)
+        
+        # Set new key item
+        self.key_item = item
+        if item is not None:
+            item.set_as_key_item(True)
+    
+    def clear_key_item(self):
+        """Clear the key item"""
+        if self.key_item is not None:
+            self.key_item.set_as_key_item(False)
+        self.key_item = None
+    
     def toggle_sidebar_position(self):
         """Swap sidebar from left to right or vice versa"""
         if self.sidebar_on_left:
@@ -1166,6 +1522,59 @@ class DayZImageset(QMainWindow):
         if missing_files[0] > 0:
             QMessageBox.warning(self, "Missing Source Files", f"Project loaded, but {missing_files[0]} image file(s) were skipped.")
 
+    def clear_workspace(self):
+        """Clear all elements from the workspace with a save prompt"""
+        if self.current_element_count == 0:
+            QMessageBox.information(self, "Workspace Already Empty", "There are no elements to clear.")
+            return
+        
+        # Prompt to save
+        reply = QMessageBox.question(
+            self,
+            "Clear Workspace?",
+            "Save project before clearing?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save
+        )
+        
+        if reply == QMessageBox.Cancel:
+            return
+        elif reply == QMessageBox.Save:
+            if not self.save_project():
+                return  # Save failed, don't clear
+        
+        # Clear the workspace
+        self.tree.clear()
+        self.raw_images.clear()
+        self.scene.clear()
+        self.grid_lines.clear()
+        self.current_element_count = 0
+        self.key_item = None
+        self.canvas_background_rect = None
+        
+        # Reset canvas to default
+        self.canvas_width = 4096
+        self.canvas_height = 4096
+        self.combo_size.blockSignals(True)
+        self.combo_size.setCurrentText("4096")
+        self.combo_size.blockSignals(False)
+        
+        # Reset properties panel
+        self.edit_item_name.setText("")
+        self.edit_item_name.setEnabled(False)
+        self.edit_item_path.setText("")
+        self.label_item_width.setText("W: -")
+        self.label_item_height.setText("H: -")
+        self.spin_item_x.setValue(0)
+        self.spin_item_y.setValue(0)
+        
+        # Update UI
+        self.update_element_count()
+        self.refresh_group_dropdown()
+        self.update_canvas_size()
+        
+        QMessageBox.information(self, "Workspace Cleared", "All elements have been cleared.")
+
     def _deserialize_tree_item(self, node_data, parent_item, elements_dict, missing_files):
         """Recursively deserialize tree from structure"""
         if parent_item is None:
@@ -1235,6 +1644,7 @@ class DayZImageset(QMainWindow):
             QScrollBar:vertical, QScrollBar:horizontal {{ background-color: #1F2329; border: 1px solid #24282E; }}
             QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background-color: #2C3136; border: 1px solid #24282E; border-radius: 2px; }}
             QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background-color: #24282E; }}
+            QToolTip {{ background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E;  }}
         """
         self.setStyleSheet(stylesheet)
 
@@ -1420,7 +1830,7 @@ class DayZImageset(QMainWindow):
             self.update_all_outlines()
     
     def zoom_in(self):
-        new_zoom = min(150, self.current_zoom_percentage + 5)
+        new_zoom = min(250, self.current_zoom_percentage + 5)
         self.set_zoom_level(new_zoom)
     
     def zoom_out(self):
@@ -1449,14 +1859,85 @@ class DayZImageset(QMainWindow):
         group_item = QTreeWidgetItem(self.tree, ["NewGroup"])
         group_item.setFlags(group_item.flags() | Qt.ItemIsEditable)
         self.tree.expandItem(group_item)
+        # Select the new group in the hierarchy
+        self.tree.setCurrentItem(group_item)
+        # Instantly enter rename mode
+        self.tree.editItem(group_item, 0)
         self.refresh_group_dropdown()
 
-    def remove_tree_item(self):
+    def _delete_descendant_scene_elements(self, tree_item):
+        for i in range(tree_item.childCount()):
+            child = tree_item.child(i)
+            if child.childCount() > 0:
+                self._delete_descendant_scene_elements(child)
+            else:
+                if hasattr(child, 'element_item') and child.element_item:
+                    child.element_item.hide_selection_overlay()
+                    self.scene.removeItem(child.element_item)
+
+    def _move_children_to_root(self, group_item):
+        # Move children into the special top-level "ROOT (Ungrouped)" group.
+        # If it doesn't exist, create it. This keeps the UI consistent with
+        # projects that expect a visible root group for ungrouped elements.
+        root_group = None
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            if top.text(0) == "ROOT (Ungrouped)":
+                root_group = top
+                break
+
+        if root_group is None:
+            root_group = QTreeWidgetItem(self.tree, ["ROOT (Ungrouped)"])
+            # Keep ROOT non-editable like other code paths expect
+            self.tree.expandItem(root_group)
+
+        # Move children one-by-one using takeChild to avoid index issues
+        while group_item.childCount() > 0:
+            child = group_item.takeChild(0)
+            root_group.addChild(child)
+            if hasattr(child, 'element_item') and child.element_item:
+                # Update the linked DraggableAsset to reference the new group
+                child.element_item.group_item = root_group
+
+    def remove_manual_group(self):
         selected = self.tree.selectedItems()
-        if selected:
-            root = self.tree.invisibleRootItem()
-            (selected[0].parent() or root).removeChild(selected[0])
-            self.refresh_group_dropdown()
+        if not selected:
+            return
+
+        tree_item = selected[0]
+        parent = tree_item.parent() or self.tree.invisibleRootItem()
+
+        if tree_item.childCount() > 0:
+            keep_reply = QMessageBox.question(
+                self,
+                "Remove Group",
+                "This group contains child elements. Keep and move them to Root(Ungrouped)?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+
+            if keep_reply == QMessageBox.Yes:
+                self._move_children_to_root(tree_item)
+                parent.removeChild(tree_item)
+                self.refresh_group_dropdown()
+                return
+
+            delete_reply = QMessageBox.question(
+                self,
+                "Delete Child Elements",
+                "Delete the child elements as well? This will remove them from the canvas.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+
+            if delete_reply == QMessageBox.Yes:
+                self._delete_descendant_scene_elements(tree_item)
+                parent.removeChild(tree_item)
+                self.refresh_group_dropdown()
+            return
+
+        parent.removeChild(tree_item)
+        self.refresh_group_dropdown()
 
     def import_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Images to Import", "", "Image Files (*.png *.tga *.jpg *.bmp)")
@@ -1694,6 +2175,20 @@ class DayZImageset(QMainWindow):
             if isinstance(item, DraggableAsset):
                 item.show_selection_overlay()
         
+        # --- Manage key item based on selection ---
+        draggable_items = [item for item in selected_items if isinstance(item, DraggableAsset)]
+        
+        if len(draggable_items) == 0:
+            # No items selected, clear key item
+            self.clear_key_item()
+        elif len(draggable_items) == 1:
+            # Single item selected, it's automatically the key item
+            self.set_key_item(draggable_items[0])
+        else:
+            # Multi-select: if current key item is no longer selected, pick first item as key
+            if self.key_item is None or self.key_item not in draggable_items:
+                self.set_key_item(draggable_items[0])
+        
         # Update tree selection to match scene selection (multi-select support)
         self.tree.blockSignals(True)
         self.tree.clearSelection()
@@ -1759,16 +2254,20 @@ class DayZImageset(QMainWindow):
         self.tree.blockSignals(False)
 
     def on_tree_selection_changed(self):
+        # Give focus to graphics view for proper key event handling
+        self.view.setFocus()
+        
         selected_items = self.tree.selectedItems()
+
+        # 1. START BLOCKING SCENE SIGNALS
+        # This prevents the canvas from triggering a feedback loop that overwrites the tree!
+        self.scene.blockSignals(True)
 
         for item in self.scene.items():
             if isinstance(item, DraggableAsset):
                 item.hide_selection_overlay()
 
-        self.scene.blockSignals(True)
         self.scene.clearSelection()
-        self.scene.blockSignals(False)
-
         self.refresh_group_dropdown()
 
         # --- Update Properties Panel ---
@@ -1815,6 +2314,13 @@ class DayZImageset(QMainWindow):
             # Center view on first selected element
             if isinstance(first_element_to_center, DraggableAsset):
                 self.view.centerOn(first_element_to_center)
+
+        # 2. UNBLOCK SCENE SIGNALS
+        # Safe to listen to the canvas again now that the tree is finished!
+        self.scene.blockSignals(False)
+
+        # Give focus to graphics view so delete key and other shortcuts work
+        self.view.setFocus()
     
     def _select_group_children(self, group_item, save_first=False):
         for i in range(group_item.childCount()):
@@ -1858,14 +2364,20 @@ class DayZImageset(QMainWindow):
         shortcuts_layout = QVBoxLayout(shortcuts_tab)
         shortcuts_text = """
         <h3 style='color: #ff5500;'>Keyboard & Mouse Shortcuts</h3>
-        <table width='100%' cellpadding='6'>
+        <table width='100%' cellpadding='6' cellspacing='0'>
             <tr><td width='40%'><b>Ctrl + Z</b></td><td>Undo last action</td></tr>
             <tr><td><b>Ctrl + Y / Ctrl+Shift+Z</b></td><td>Redo action</td></tr>
             <tr><td><b>Delete</b></td><td>Delete selected element(s)</td></tr>
             <tr><td><b>Ctrl + H / F1</b></td><td>Open this Help menu</td></tr>
             <tr><td><b>Right-Click + Drag</b></td><td>Pan around the canvas</td></tr>
-            <tr><td><b>Scroll Wheel</b></td><td>Zoom in and out</td></tr>
-            <tr><td><b>Shift + Click/Drag</b></td><td>Select multiple elements</td></tr>
+            <tr><td><b>Scroll Wheel/Ctrl +/-</b></td><td>Zoom in and out</td></tr>
+            <tr><td><b>Left-Click + Drag</b></td><td>Select multiple elements</td></tr>
+            <tr><td><b>F2 / Double-Click</b></td><td>Rename selected element or group</td></tr>
+            <tr><td><b>Ctrl + Left-Click</b></td><td>Change Key Item (when multiple items selected)</td></tr>
+            <tr><td><b>Ctrl+Shift +/-</b></td><td>Add or remove Group</td></tr>
+            <tr><td><b>Ctrl + E</b></td><td>Export current project as .imageset and .edds</td></tr>
+            <tr><td><b>Ctrl + N</b></td><td>Start a new project (clear canvas)</td></tr>
+            <tr><td><b>Ctrl + T</b></td><td>Toggle tooltips on/off</td></tr>
         </table>
         """
         lbl_shortcuts = QLabel(shortcuts_text)
@@ -1879,7 +2391,6 @@ class DayZImageset(QMainWindow):
         tips_tab = QScrollArea()
         tips_tab.setWidgetResizable(True)
         tips_tab.setFrameShape(QScrollArea.NoFrame)
-
         tips_content = QWidget()
         tips_layout = QVBoxLayout(tips_content)
         tips_text = """
@@ -1925,12 +2436,29 @@ class DayZImageset(QMainWindow):
         tips_layout.addStretch()
 
         tips_tab.setWidget(tips_content)
-        tabs.addTab(tips_tab, "Tips & Tricks")
+        tabs.addTab(tips_tab, "Tips and Tricks")
         
         layout.addWidget(tabs)
         
         # --- Bottom Section: Discord & Help ---
-        layout.addSpacing(10)
+        layout.addSpacing(5)
+        # --- NEW TOOLTIP TOGGLE ---
+        self.check_tooltips = QCheckBox("Enable Tooltips globally Ctrl+T")
+        self.check_tooltips.setChecked(self.tooltips_enabled)
+        
+        # Inline function to handle the toggle
+        def toggle_tooltips(checked):
+            self.tooltips_enabled = checked
+            
+        self.check_tooltips.toggled.connect(toggle_tooltips)
+        
+        # Center the checkbox nicely using a layout with stretches on both sides
+        toggle_layout = QHBoxLayout()
+        toggle_layout.addStretch()
+        toggle_layout.addWidget(self.check_tooltips)
+        toggle_layout.addStretch()
+        layout.addLayout(toggle_layout)
+        layout.addSpacing(5)
         
         help_text = QLabel("Need help, found a bug, or just want to chat?")
         help_text.setAlignment(Qt.AlignCenter)
@@ -1966,22 +2494,27 @@ class DayZImageset(QMainWindow):
     def closeEvent(self, event):
         # Prevent prompt if the canvas is completely empty
         if self.current_element_count > 0:
-            reply = QMessageBox.question(
-                self, 
-                "Save Project",
-                "Do you want to save your project before closing?",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Save Project")
+            msg.setText("Do you want to save your project before closing?")
+            msg.setIcon(QMessageBox.Question)
+            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Yes)
+            msg.setStyleSheet(
+                "QPushButton { min-width: 120px; min-height: 60px; font-size: 12pt; padding: 8px 16px; }"
+                "QLabel { min-width: 420px; font-size: 12pt; }"
             )
+            reply = msg.exec_()
+            standard_reply = msg.standardButton(msg.clickedButton())
 
-            if reply == QMessageBox.Yes:
+            if standard_reply == QMessageBox.Yes:
                 # Only close if the save was actually successful
                 if self.save_project():
                     event.accept()
                 else:
                     event.ignore()
                     return
-            elif reply == QMessageBox.Cancel:
+            elif standard_reply == QMessageBox.Cancel:
                 event.ignore()
                 return
             else:
