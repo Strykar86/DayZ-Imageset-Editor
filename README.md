@@ -31,15 +31,15 @@ Make sure you have Python 3.8 or higher installed. Install the necessary UI and 
 ```bash
 pip install PyQt5 Pillow
 ```
--   ## Credits & Acknowledgments 🤝
+-   ### Credits & Acknowledgments 🤝
     
     This tool wouldn't be possible without the excellent Go libraries created by **WoozyMasta** (github.com/woozymasta/edds and github.com/woozymasta/bcn). They handle the heavy lifting of the direct .edds processing pipeline utilized by the application's backend converter.
     
     <sub>Developed by a human and polished with a dash of AI efficiency. 🤖 _To the trolls who still can't seem to grasp how useful AI tools are for streamlining development workflows: stay salty!_</sub> 😉🧂
 
-- ## AI-Assisted Development Notice
+### AI-Assisted Development Notice
 
-This project was developed with assistance from AI tools, including GitHub Copilot. While I designed, tested, and maintained the application myself, AI-assisted coding was used to help accelerate development and overcome knowledge gaps while learning Python.
+<sub>This project was developed with assistance from AI tools, including GitHub Copilot. While I designed, tested, and maintained the application myself, AI-assisted coding was used to help accelerate development and overcome knowledge gaps while learning Python.
 
 This tool is provided free of charge and is open source. My goal was to create something useful for the DayZ modding community without spending months becoming an expert Python developer before releasing it.
 
@@ -47,7 +47,7 @@ As with any community project, bugs, inefficiencies, and mistakes may exist. Con
 
 Please keep in mind that this project is maintained in my spare time alongside full-time employment and other responsibilities. Updates and support will be provided when time permits.
 
-Thank you to everyone who tests, contributes, and helps improve the project. 🫶
+Thank you to everyone who tests, contributes, and helps improve the project.</sub> 🫶
 
 <h2>Screenshots</h2>
 
