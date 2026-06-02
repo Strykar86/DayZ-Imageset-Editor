@@ -36,3 +36,16 @@ pip install PyQt5 Pillow
     This tool wouldn't be possible without the excellent Go libraries created by **WoozyMasta** (github.com/woozymasta/edds and github.com/woozymasta/bcn). They handle the heavy lifting of the direct .edds processing pipeline utilized by the application's backend converter.
     
     <sub>Developed by a human and polished with a dash of AI efficiency. 🤖 _To the trolls who still can't seem to grasp how useful AI tools are for streamlining development workflows: stay salty!_</sub> 😉🧂
+
+<h2>Screenshots</h2>
+
+<img src="screenshots/DayZ_Image_Editor_v1_2_screenshot1.png" width="800" alt="Screenshot 1">
+
+<img src="screenshots/DayZ_Image_Editor_v1_2_screenshot2.png" width="800" alt="Screenshot 2">
+
+<img src="screenshots/DayZ_Image_Editor_v1_2_screenshot3.png" width="800" alt="Screenshot 3">
+
+<img src="screenshots/DayZ_Image_Editor_v1_2_screenshot4.png" width="800" alt="Screenshot 4">
+
+<img src="screenshots/DayZ_Image_Editor_v1_2_screenshot5.png" width="800" alt="Screenshot 5">
+
