@@ -1,0 +1,46 @@
+Language,Language_en,Language_cz,Language_de,Language_ru,Language_es,Language_fr
+STR_TITLE,DayZ Imageset Editor - Make something cool for DayZ! 🎨🖌,DayZ Imageset Editor - Vytvořte něco skvělého pro DayZ! 🎨🖌,DayZ Imageset Editor - Mach etwas Cool für DayZ! 🎨🖌,DayZ Imageset Editor - Создайте что-то крутое для DayZ! 🎨🖌,DayZ Imageset Editor - ¡Haz algo genial para DayZ! 🎨🖌,DayZ Imageset Editor - Créez quelque chose de génial pour DayZ! 🎨🖌
+STR_FILE_NEW,New Project,Nový projekt,Neues Projekt,Новый проект,Nuevo Proyecto,Nouveau Projet
+STR_FILE_OPEN,Load Project,Načíst projekt,Projekt laden,Загрузить проект,Cargar Proyecto,Charger Projet
+STR_FILE_SAVE,Save Project,Uložit projekt,Projekt speichern,Сохранить проект,Guardar Proyecto,Sauvegarder Projet
+STR_EXPORT_BTN,EXPORT IMAGESET + EDDS,EXPORTOVAT IMAGESET + EDDS,IMAGESET + EDDS EXPORTIEREN,ЭКСПОРТ IMAGESET + EDDS,EXPORTAR IMAGESET + EDDS,EXPORTER IMAGESET + EDDS
+STR_HELP,Help,Nápověda,Hilfe,Помощь,Ayuda,Aide
+STR_ABOUT,About,O aplikaci,Über,О программе,Acerca de,À propos
+STR_SIDEBAR_POS,Sidebar,Boční panel,Seitenleiste,Боковая панель,Barra lateral,Barre latérale
+STR_LBL_ALIGN," | Align:"," | Zarovnat:"," | Ausrichten:"," | Выравнивание:"," | Alinear:"," | Aligner:"
+STR_LBL_ZOOM,"Zoom:","Zvětšení:","Zoom:","Масштаб:","Zoom:","Zoom:"
+STR_LBL_CANVAS," | Canvas Size:"," | Velikost plátna:"," | Leinwandgröße:"," | Размер холста:"," | Tamaño del lienzo:"," | Taille de la toile:"
+STR_LBL_GRID,"Grid Size:","Mřížka:","Rastergröße:","Размер сетки:","Tamaño de la cuadrícula:","Taille de la grille:"
+STR_LBL_OUTLINE,"Outline:","Obrys:","Umriss:","Контур:","Contorno:","Contour:"
+STR_CUSTOM_SIZE,Custom Size,Vlastní velikost,Benutzerdefinierte Größe,Пользовательский размер,Tamaño personalizado,Taille personnalisée
+STR_CANVAS_COLOR,Canvas Color,Barva plátna,Leinwandfarbe,Цвет холста,Color del lienzo,Couleur de la toile
+STR_ALIGN_CANVAS,Align to Canvas,Zarovnat na plátno,An Leinwand ausrichten,Выровнять по холсту,Alinear al lienzo,Aligner sur la toile
+STR_SNAP_GRID,Snap to Grid,Přichytit k mřížce,Am Raster einrasten,Привязка к сетке,Ajustar a la cuadrícula,Aligner sur la grille
+STR_SHOW_GRIDLINES,Show Gridlines,Zobrazit mřížku,Rasterlinien anzeigen,Показывать сетку,Mostrar cuadrícula,Afficher le quadrillage
+STR_SNAP_ELEMENTS,Snap to Elements,Přichytit k prvkům,An Elementen einrasten,Привязка к элементам,Ajustar a elementos,Aligner sur les éléments
+STR_SHOW_OUTLINES,Show Outlines,Zobrazit obrysy,Umrisse anzeigen,Показывать контуры,Mostrar contornos,Afficher les contours
+STR_OUTLINE_COLOR,Outline Color,Barva obrysu,Umrissfarbe,Цвет контура,Color del contorno,Couleur del contorno
+STR_CLEAR_WORKSPACE,Clear Workspace,Vymazat plochu,Arbeitsbereich leeren,Очистить холст,Limpiar espacio,Effacer l'espace
+STR_IMPORT_IMAGE,Import Image(s),Importovat obrázek(y),Bild(er) importieren,Импорт изображений,Importar imagen(es),Importer image(s)
+STR_IMPORT_FOLDER,Import Folder(s),Importovat složku(y),Ordner importieren,Импорт папок,Importar carpeta(s),Importer dossier(s)
+STR_UNPACK,Unpack .imageset to Workspace,Rozbalit .imageset,Entpacken .imageset,Распаковать .imageset,Desempaquetar .imageset,Décompresser .imageset
+STR_ADD_GROUP,+ Add Group,+ Přidat skupinu,+ Gruppe hinzufügen,+ Добавить группу,+ Añadir grupo,+ Ajouter groupe
+STR_REM_GROUP,- Remove Group,- Odebrat skupinu,- Gruppe entfernen,- Удалить группу,- Eliminar grupo,- Supprimer groupe
+STR_STATUS_LANG_CHANGED,Language updated!,Jazyk aktualizován,Sprache aktualisiert,Язык обновлен,Idioma actualizado,Langue mise à jour
+STR_TT_HELP,Controls & Shortcuts (Ctrl+H / F1),Ovládací prvky a zkratky,Steuerung & Verknüpfungen,Управление и ярлыки,Controles y atajos,Contrôles et raccourcis
+STR_TT_ABOUT,About DayZ ImageSet Editor,O editoru DayZ ImageSet,Über DayZ ImageSet Editor,О редакторе DayZ ImageSet,Acerca del editor DayZ ImageSet,À propos de l'éditeur DayZ ImageSet
+STR_TT_EXPORT,"Export workspace as .imageset & .edds (Ctrl+E)","Exportovat plochu jako .imageset a .edds","Arbeitsbereich als .imageset & .edds exportieren","Экспорт холста как .imageset и .edds","Exportar espacio de trabajo como .imageset y .edds","Exporter l'espace de travail en .imageset et .edds"
+STR_TT_CLEAR,Clear everything from the workspace! (Ctrl+N),Vymazat vše z plochy!,Alles aus dem Arbeitsbereich löschen!,Очистить всё с холста!,¡Borrar todo del espacio de trabajo!,Effacer tout de l'espace de travail !
+STR_TT_SAVE,Save your current workspace (Ctrl+S),Uložit aktuální plochu,Aktuellen Arbeitsbereich speichern,Сохранить текущий холст,Guardar su espacio de trabajo actual,Sauvegarder votre espace de travail actuel
+STR_TT_LOAD,Load a previously saved project (Ctrl+O),Načíst dříve uložený projekt,Zuvor gespeichertes Projekt laden,Загрузить ранее сохраненный проект,Cargar un proyecto guardado previamente,Charger un projet précédemment sauvegardé
+STR_TT_SIDEBAR_POS,Toggle the position of the sidebar,Toggle the position of the sidebar,Die Position der Seitenleiste umschalten,Переключить позицию боковой панели,Alternar la posición de la barra lateral,Changer la position du panneau latéral
+STR_TT_IMPORT_IMAGE,Import image(s) into the workspace,Importovat obrázek(y) do pracovního prostoru,Bilder in den Arbeitsbereich importieren,Импортировать изображения в рабочую область,Importar imagen(es) al espacio de trabajo,Importer image(s) dans l'espace de travail
+STR_TT_IMPORT_FOLDER,Import folder(s) into the workspace,Importovat složku(y) do pracovního prostoru,Ordner in den Arbeitsbereich importieren,Импортировать папки в рабочую область,Importar carpeta(s) al espacio de trabajo,Importer dossier(s) dans l'espace de travail
+STR_TT_UNPACK,Unpack .imageset to the workspace,Rozbalit .imageset do pracovního prostoru,Entpacken .imageset in den Arbeitsbereich,Распаковать .imageset в рабочую область,Desempaquetar .imageset en el espacio de trabajo,Décompresser .imageset dans l'espace de travail
+STR_TT_ALIGN,Align items in the workspace,Alignovat položky v pracovním prostoru,Elemente im Arbeitsbereich ausrichten,Выровнять элементы на холсте,Alinear elementos en el espacio de trabajo,Aligner les éléments dans l'espace de travail
+STR_TT_GRID_SIZE,Set the size of the grid,Nastavit velikost mřížky,Größe des Rasters einstellen,Установить размер сетки,Establecer el tamaño de la cuadrícula,Définir la taille de la grille
+STR_TT_ZOOM,Adjust the zoom level,Nastavit úroveň přiblížení,Zoom anpassen,Настроить уровень масштабирования,Ajustar el nivel de zoom,Ajuster le niveau de zoom
+STR_TT_CANVAS_SIZE,Set the size of the canvas,Nastavit velikost plátna,Größe der Leinwand einstellen,Установить размер холста,Establecer el tamaño del lienzo,Définir la taille de la toile
+STR_TT_CUSTOM_SIZE,Set a custom canvas size,Nastavit vlastní velikost plátna,Individuelle Größe der Leinwand einstellen,Установить пользовательский размер холста,Establecer un tamaño de lienzo personalizado,Définir une taille de toile personnalisée
+STR_TT_BG_COLOR,Change the background color of the canvas,Změnit barvu pozadí plátna,Hintergrundfarbe der Leinwand ändern,Изменить цвет фона холста,Cambiar el color de fondo del lienzo,Changer la couleur de fond de la toile
+STR_TT_ALIGN_CANVAS,Align items to the canvas,Alignovat položky k plátnu,Elemente an die Leinwand ausrichten,Выровнять элементы по холсту,Alinear elementos al lienzo,Aligner les éléments sur la toile
