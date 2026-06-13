@@ -19,6 +19,11 @@
 import sys
 import os
 import html
+import json
+import csv
+import configparser
+import urllib.request
+
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QFileDialog, QTreeWidget, 
@@ -31,6 +36,8 @@ from PyQt5.QtCore import Qt, QPointF, QEvent
 from PyQt5.QtGui import QFontMetrics, QPixmap, QColor, QPainter, QCursor, QKeySequence, QIcon, QImage, QFont
 from PIL import Image
 from imagesetconv_wrapper import ImagesetConverter
+from localization import LocalizationManager
+
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -198,6 +205,7 @@ class DraggableAsset(QGraphicsPixmapItem):
             # Brighter, more opaque color for key item
             self.selection_overlay.setBrush(QColor(150, 200, 255, 150))
         else:
+            # Standard blue overlay
             self.selection_overlay.setBrush(QColor(100, 150, 255, 80))
     
     def set_as_key_item(self, is_key=True):
@@ -243,7 +251,8 @@ class ZoomableView(QGraphicsView):
             event.accept()
         elif event.button() == Qt.LeftButton:
             scene_pos = self.mapToScene(event.pos())
-            item_under_mouse = self.scene().itemAt(scene_pos, self.transform())         
+            item_under_mouse = self.scene().itemAt(scene_pos, self.transform())
+            
             # Drill down to the parent element if we hit the visual overlay or border
             if item_under_mouse and item_under_mouse.parentItem():
                 item_under_mouse = item_under_mouse.parentItem()
@@ -620,6 +629,25 @@ class CustomSizeDialog(QDialog):
 class DayZImageset(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        # --- Config & Settings Setup ---
+        # Use sys.executable for PyInstaller binaries, __file__ for development
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+        self.config_file = os.path.join(exe_dir, "settings.ini")
+        self.config = configparser.ConfigParser()
+        self.config.read(self.config_file, encoding='utf-8') # If the file doesn't exist, this safely does nothing!
+
+        # Safely get saved settings, falling back to defaults if missing
+        saved_lang = self.config.get("Preferences", "Language", fallback="English")
+        self.tooltips_enabled = self.config.getboolean("Preferences", "TooltipsEnabled", fallback=True)
+
+        QApplication.instance().installEventFilter(self) # Intercepts all app events for tooltips
+        
+        # --- Localization Engine Setup ---
+        self.locale = LocalizationManager(resource_path("stringtable.csv"), default_lang="Language_en")
+        self.locale.set_language_by_name(saved_lang) # Set to the saved language immediately
+        self.T = self.locale.translate
+
         self.setWindowTitle("DayZ Imageset Editor - Make something cool for DayZ! 🎨🖌")
         self.setWindowIcon(QIcon(resource_path("resources/app_icon.ico")))
         self.setGeometry(100, 100, 1600, 900)
@@ -668,6 +696,7 @@ class DayZImageset(QMainWindow):
 
         self._build_ui()
         self._apply_dark_theme()
+        self.load_app_preferences()  # Load saved language preference after UI is built
 
     def keyPressEvent(self, event):
         """Handle key press events at the main window level for deletion, zooming, and group actions."""
@@ -713,7 +742,75 @@ class DayZImageset(QMainWindow):
         # If the key pressed wasn't Delete or any of our Ctrl combinations, 
         # let it pass through to standard Qt navigation controls safely.
         super().keyPressEvent(event)
-    
+
+    def on_language_changed(self, selected_display_name):
+        """Handles on-the-fly language changes and dynamically updates UI elements."""
+        self.locale.set_language_by_name(selected_display_name)
+        self.save_app_preferences()  # Save language preference when changed
+        
+        # Title Bar
+        self.setWindowTitle(self.T("STR_TITLE", "DayZ Imageset Editor - Make something cool for DayZ! 🎨🖌"))
+
+        # Sidebar Direction Arrow Logic
+        arrow = "←" if not self.sidebar_on_left else "→"
+        self.btn_sidebar_pos.setText(f"{self.T('STR_SIDEBAR_POS', 'Sidebar')} {arrow}")
+        
+        # Top Bar Text
+        self.btn_help.setText(self.T("STR_HELP", "Help"))
+        self.btn_about.setText(self.T("STR_ABOUT", "About"))
+        self.lbl_align.setText(self.T("STR_LBL_ALIGN", " | Align:"))
+        self.lbl_grid_size.setText(self.T("STR_LBL_GRID", "Grid Size:"))
+        self.lbl_zoom.setText(self.T("STR_LBL_ZOOM", "Zoom:"))
+        self.lbl_canvas_size.setText(self.T("STR_LBL_CANVAS", " | Canvas Size:"))
+        self.btn_custom_size.setText(self.T("STR_CUSTOM_SIZE", "Custom Size"))
+        self.btn_bg_color.setText(self.T("STR_CANVAS_COLOR", "Canvas Color"))
+        
+        # Checkboxes and Toggles
+        self.check_align_to_canvas.setText(self.T("STR_ALIGN_CANVAS", "Align to Canvas"))
+        self.check_snap_grid.setText(self.T("STR_SNAP_GRID", "Snap to Grid "))
+        self.check_show_gridlines.setText(self.T("STR_SHOW_GRIDLINES", "Show Gridlines"))
+        self.check_snap_elements.setText(self.T("STR_SNAP_ELEMENTS", "Snap to Elements"))
+        self.check_show_outlines.setText(self.T("STR_SHOW_OUTLINES", "Show Outlines"))
+        self.btn_outline_color.setText(self.T("STR_OUTLINE_COLOR", "Outline Color"))
+        
+        # Sidebar Core Actions
+        self.btn_clear_all.setText(self.T("STR_CLEAR_WORKSPACE", "Clear Workspace"))
+        self.btn_import_image.setText(self.T("STR_IMPORT_IMAGE", "Import Image(s)"))
+        self.btn_import_folder.setText(self.T("STR_IMPORT_FOLDER", "Import Folder(s)"))
+        self.btn_unpack.setText(self.T("STR_UNPACK", "Unpack .imageset to Workspace"))
+        self.btn_save_proj.setText(self.T("STR_FILE_SAVE", "Save Project"))
+        self.btn_load_proj.setText(self.T("STR_FILE_OPEN", "Load Project"))
+        self.btn_add_group.setText(self.T("STR_ADD_GROUP", "+ Add Group"))
+        self.btn_rem_group.setText(self.T("STR_REM_GROUP", "- Remove Group"))
+        self.btn_export.setText(f"{self.T('STR_EXPORT_BTN', 'EXPORT IMAGESET + EDDS')} (Ctrl+E)")
+        
+        # Tooltips
+        self.set_widget_tooltip(self.btn_sidebar_pos, self.T("STR_TT_SIDEBAR_POS", "Toggle the position of the sidebar"))
+        self.set_widget_tooltip(self.btn_help, self.T("STR_TT_HELP", "Open the help documentation"))
+        self.set_widget_tooltip(self.btn_about, self.T("STR_TT_ABOUT", "About this application"))
+        self.set_widget_tooltip(self.btn_export, self.T("STR_TT_EXPORT", "Export the current imageset"))
+        self.set_widget_tooltip(self.btn_clear_all, self.T("STR_TT_CLEAR", "Clear everything from the workspace!"))
+        self.set_widget_tooltip(self.btn_save_proj, self.T("STR_TT_SAVE", "Save the current project"))
+        self.set_widget_tooltip(self.btn_load_proj, self.T("STR_TT_LOAD", "Load a previously saved project"))
+        self.set_widget_tooltip(self.btn_import_image, self.T("STR_TT_IMPORT_IMAGE", "Import image(s) into the workspace"))
+        self.set_widget_tooltip(self.btn_import_folder, self.T("STR_TT_IMPORT_FOLDER", "Import folder(s) into the workspace"))
+        self.set_widget_tooltip(self.btn_unpack, self.T("STR_TT_UNPACK", "Unpack .imageset to the workspace"))
+        self.set_widget_tooltip(self.lbl_align, self.T("STR_TT_ALIGN", "Align items in the workspace"))
+        self.set_widget_tooltip(self.lbl_grid_size, self.T("STR_TT_GRID_SIZE", "Set the size of the grid"))
+        self.set_widget_tooltip(self.lbl_zoom, self.T("STR_TT_ZOOM", "Adjust the zoom level"))
+        self.set_widget_tooltip(self.lbl_canvas_size, self.T("STR_TT_CANVAS_SIZE", "Set the size of the canvas"))
+        self.set_widget_tooltip(self.btn_custom_size, self.T("STR_TT_CUSTOM_SIZE", "Set a custom canvas size"))
+        self.set_widget_tooltip(self.btn_bg_color, self.T("STR_TT_BG_COLOR", "Change the background color of the canvas"))
+        self.set_widget_tooltip(self.check_align_to_canvas, self.T("STR_TT_ALIGN_CANVAS", "Align items to the canvas"))
+        self.set_widget_tooltip(self.check_snap_grid, self.T("STR_TT_SNAP_GRID", "Snap items to the grid"))
+        self.set_widget_tooltip(self.check_show_gridlines, self.T("STR_TT_SHOW_GRIDLINES", "Show gridlines"))
+        self.set_widget_tooltip(self.check_snap_elements, self.T("STR_TT_SNAP_ELEMENTS", "Snap items to other elements"))
+        self.set_widget_tooltip(self.check_show_outlines, self.T("STR_TT_SHOW_OUTLINES", "Show outlines of items"))
+        self.set_widget_tooltip(self.btn_outline_color, self.T("STR_TT_OUTLINE_COLOR", "Change the color of the outlines"))
+        
+        # Status Bar Feedback
+        self.statusBar().showMessage(self.T("STR_STATUS_LANG_CHANGED", "Language updated!"), 3000)
+            
     def eventFilter(self, obj, event):
         """Global event filter to intercept and block tooltips when disabled."""
         if event.type() == QEvent.ToolTip and not self.tooltips_enabled:
@@ -769,7 +866,7 @@ class DayZImageset(QMainWindow):
         
         self.btn_sidebar_pos = QPushButton("Sidebar →")
         self.btn_sidebar_pos.setToolTip("Slide to the right!")
-        self.btn_sidebar_pos.setMaximumWidth(100)
+        self.btn_sidebar_pos.setMaximumWidth(200)
         self.btn_sidebar_pos.clicked.connect(self.toggle_sidebar_position)
         row1_layout.addWidget(self.btn_sidebar_pos)
 
@@ -787,25 +884,27 @@ class DayZImageset(QMainWindow):
         btn_redo.clicked.connect(self.undo_stack.redo)
         row1_layout.addWidget(btn_redo)
         
-        row1_layout.addWidget(QLabel(" | Canvas Size:"))
+        self.lbl_canvas_size = QLabel(" | Canvas Size:")
+        row1_layout.addWidget(self.lbl_canvas_size)
         self.combo_size = QComboBox()
         self.combo_size.addItems(["512", "1024", "2048", "4096", "8192"])
         self.combo_size.setCurrentText("4096")
         self.combo_size.currentTextChanged.connect(self.on_preset_size_changed)
         row1_layout.addWidget(self.combo_size)
         
-        btn_custom_size = QPushButton("Custom Size")
-        self.set_widget_tooltip(btn_custom_size, "Set a custom canvas size")
-        btn_custom_size.clicked.connect(self.open_custom_size_dialog)
-        row1_layout.addWidget(btn_custom_size)
+        self.btn_custom_size = QPushButton("Custom Size")
+        self.set_widget_tooltip(self.btn_custom_size, "Set a custom canvas size")
+        self.btn_custom_size.clicked.connect(self.open_custom_size_dialog)
+        row1_layout.addWidget(self.btn_custom_size)
         
-        btn_bg_color = QPushButton("Canvas Color")
-        self.set_widget_tooltip(btn_bg_color, "Change the background color of the canvas. \n\nThis does NOT affect the actual imageset background color, just the editor's canvas for better visibility while working.")
-        btn_bg_color.clicked.connect(self.change_bg_color)
-        row1_layout.addWidget(btn_bg_color)
+        self.btn_bg_color = QPushButton("Canvas Color")
+        self.set_widget_tooltip(self.btn_bg_color, "Change the background color of the canvas. \n\nThis does NOT affect the actual imageset background color, just the editor's canvas for better visibility while working.")
+        self.btn_bg_color.clicked.connect(self.change_bg_color)
+        row1_layout.addWidget(self.btn_bg_color)
         
         # --- Icon-based Alignment Buttons ---
-        row1_layout.addWidget(QLabel(" | Align:"))
+        self.lbl_align = QLabel(" | Align:")
+        row1_layout.addWidget(self.lbl_align)
         
         btn_align_left = QPushButton()
         btn_align_left.setIcon(QIcon(resource_path("resources/align-item-left-fill.svg")))
@@ -844,18 +943,47 @@ class DayZImageset(QMainWindow):
         row1_layout.addStretch()
 
         # Help button
-        btn_help = QPushButton("Help")
-        btn_help.setToolTip("Controls & Shortcuts (Ctrl+H / F1)")
-        btn_help.setMaximumWidth(80)
-        btn_help.clicked.connect(self.show_help_dialog)
-        row1_layout.addWidget(btn_help)
+        self.btn_help = QPushButton("Help")
+        self.btn_help.setToolTip("Controls & Shortcuts (Ctrl+H / F1)")
+        self.btn_help.setMaximumWidth(120)
+        self.btn_help.clicked.connect(self.show_help_dialog)
+        row1_layout.addWidget(self.btn_help)
 
         # About button
-        btn_about = QPushButton("About")
-        btn_about.setToolTip("About DayZ ImageSet Editor")
-        btn_about.setMaximumWidth(80)
-        btn_about.clicked.connect(self.show_about_dialog)
-        row1_layout.addWidget(btn_about)
+        self.btn_about = QPushButton("About")
+        self.btn_about.setToolTip("About DayZ ImageSet Editor")
+        self.btn_about.setMaximumWidth(220)
+        self.btn_about.clicked.connect(self.show_about_dialog)
+        row1_layout.addWidget(self.btn_about)
+
+        # --- Language Dropdown Selector Layout ---
+        lang_layout = QHBoxLayout()
+        lang_layout.setSpacing(4)
+        
+        # Translate Icon Label
+        lbl_lang_icon = QLabel()
+        icon_path = resource_path("resources/translate.svg")
+        if os.path.exists(icon_path):
+            lbl_lang_icon.setPixmap(QPixmap(icon_path).scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            # Safe text-based fallback if the user is missing the .svg asset
+            lbl_lang_icon.setText("🌐") 
+            
+        # Dropdown Combobox for language selection
+        self.combo_lang = QComboBox()
+        self.combo_lang.addItems(list(self.locale.language_mapping.keys()))
+        
+        # Pull the saved language from our config parser
+        saved_lang = self.config.get("Preferences", "Language", fallback="English")
+        self.combo_lang.setCurrentText(saved_lang)
+        
+        self.combo_lang.currentTextChanged.connect(self.on_language_changed)
+        
+        lang_layout.addWidget(lbl_lang_icon)
+        lang_layout.addWidget(self.combo_lang)
+
+        row1_layout.addLayout(lang_layout)
+        row1_layout.addSpacing(10)
         
         # Row 2: Overlays and Snapping
         row2_layout = QHBoxLayout()
@@ -863,7 +991,8 @@ class DayZImageset(QMainWindow):
         self.check_snap_grid.toggled.connect(self.on_snap_grid_toggled)
         row2_layout.addWidget(self.check_snap_grid)
         
-        row2_layout.addWidget(QLabel("Grid Size:"))
+        self.lbl_grid_size = QLabel("Grid Size:")
+        row2_layout.addWidget(self.lbl_grid_size)
         self.spin_grid_size = QSpinBox()
         self.spin_grid_size.setMinimum(4)
         self.spin_grid_size.setMaximum(256)
@@ -894,13 +1023,14 @@ class DayZImageset(QMainWindow):
         self.check_show_outlines.toggled.connect(self.on_show_outlines_toggled)
         row2_layout.addWidget(self.check_show_outlines)
         
-        btn_outline_color = QPushButton("Outline Color")
-        btn_outline_color.clicked.connect(self.set_outline_color)
-        row2_layout.addWidget(btn_outline_color)
+        self.btn_outline_color = QPushButton("Outline Color")
+        self.btn_outline_color.clicked.connect(self.set_outline_color)
+        row2_layout.addWidget(self.btn_outline_color)
 
         # Move view controls down here
         row2_layout.addWidget(QLabel(" | "))
         zoom_ctrl_layout = QHBoxLayout()
+
         btn_zoom_out = QPushButton("-")
         btn_zoom_out.setMinimumWidth(24)
         btn_zoom_out.clicked.connect(self.zoom_out)
@@ -911,12 +1041,23 @@ class DayZImageset(QMainWindow):
         btn_zoom_in.clicked.connect(self.zoom_in)
         zoom_ctrl_layout.addWidget(btn_zoom_in)
         
+        # Zoom Icon label
+        lbl_zoom_icon = QLabel()
+        icon_path = resource_path("resources/search-2-line.svg")
+        if os.path.exists(icon_path):
+            lbl_zoom_icon.setPixmap(QPixmap(icon_path).scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            # Safe text-based fallback if the user is missing the .svg asset
+            lbl_zoom_icon.setText("🔍")
+        zoom_ctrl_layout.addWidget(lbl_zoom_icon)
+
         self.combo_zoom = QComboBox()
         zoom_presets = ["5%", "10%", "20%", "25%", "30%", "40%", "50%", "60%", "75%", "80%", "90%", "100%", "110%", "120%", "130%", "140%", "150%"]
         self.combo_zoom.addItems(zoom_presets)
         self.combo_zoom.setCurrentText("100%")
         self.combo_zoom.currentTextChanged.connect(self.on_zoom_preset_changed)
-        zoom_ctrl_layout.addWidget(QLabel("Zoom:"))
+        self.lbl_zoom = QLabel("Zoom:")
+        zoom_ctrl_layout.addWidget(self.lbl_zoom)
         zoom_ctrl_layout.addWidget(self.combo_zoom)
         
         self.label_zoom_value = QLabel("100%")
@@ -941,68 +1082,68 @@ class DayZImageset(QMainWindow):
         sidebar_layout = QVBoxLayout(self.sidebar)
         
         btn_layout = QHBoxLayout()
-        btn_clear_all = QPushButton("Clear Workspace")
-        btn_clear_all.setStyleSheet("background-color: #aa0000; color: white;") # Big red button for a big red action
+        self.btn_clear_all = QPushButton("Clear Workspace")
+        self.btn_clear_all.setStyleSheet("background-color: #aa0000; color: white;") # Big red button for a big red action
         self.set_widget_tooltip(
-            btn_clear_all,
+            self.btn_clear_all,
             "Clear everything from the workspace! Use with caution, this cannot be undone. \nMake sure to save your project first if you want to keep your work."
         )
-        btn_clear_all.setMaximumWidth(120)
-        btn_clear_all.clicked.connect(self.clear_workspace)
-        btn_import_image = QPushButton("Import Image(s)")
+        self.btn_clear_all.setMaximumWidth(200)
+        self.btn_clear_all.clicked.connect(self.clear_workspace)
+        self.btn_import_image = QPushButton("Import Image(s)")
         self.set_widget_tooltip(
-            btn_import_image,
+            self.btn_import_image,
             "Import one or more images to the workspace. \n\nEach image will become a separate element that you can arrange and export as part of your .imageset!"
         )
-        btn_import_image.setMaximumWidth(250)
-        btn_import_image.clicked.connect(self.import_images)
-        btn_import_folder = QPushButton("Import Folder(s)")
+        self.btn_import_image.setMaximumWidth(250)
+        self.btn_import_image.clicked.connect(self.import_images)
+        self.btn_import_folder = QPushButton("Import Folder(s)")
         self.set_widget_tooltip(
-            btn_import_folder,
+            self.btn_import_folder,
             "Import one or more folders containing images to the workspace. \n\nSubfolders will be treated as groups, allowing you to maintain your organization and hierarchy from your filesystem within the .imageset structure!"
         )
-        btn_import_folder.setMaximumWidth(250)
-        btn_import_folder.clicked.connect(self.import_folders)
-        btn_layout.addWidget(btn_clear_all)
+        self.btn_import_folder.setMaximumWidth(250)
+        self.btn_import_folder.clicked.connect(self.import_folders)
+        btn_layout.addWidget(self.btn_clear_all)
         btn_layout.addStretch() # Pushes the clear button to the left and the import buttons to the right, Gotta keep em separated for that sweet sweet UX balance 😎
-        btn_layout.addWidget(btn_import_image)
-        btn_layout.addWidget(btn_import_folder)
+        btn_layout.addWidget(self.btn_import_image)
+        btn_layout.addWidget(self.btn_import_folder)
         sidebar_layout.addLayout(btn_layout)
-        btn_unpack = QPushButton("Unpack .imageset to Workspace")
+        self.btn_unpack = QPushButton("Unpack .imageset to Workspace")
         self.set_widget_tooltip(
-            btn_unpack,
+            self.btn_unpack,
             "Import an existing .imageset and its associated .edds file, unpacking all elements into the workspace for editing. \nGreat for modifying existing assets or using them as a base for new creations!"
         )
-        btn_unpack.setStyleSheet("background-color: #2E8B57; color: white; padding: 8px;")
-        btn_unpack.clicked.connect(self.unpack_imageset_action)
-        sidebar_layout.addWidget(btn_unpack)
+        self.btn_unpack.setStyleSheet("background-color: #2E8B57; color: white; padding: 8px;")
+        self.btn_unpack.clicked.connect(self.unpack_imageset_action)
+        sidebar_layout.addWidget(self.btn_unpack)
         
         proj_btn_layout = QHBoxLayout()
-        btn_save_proj = QPushButton("Save Project")
+        self.btn_save_proj = QPushButton("Save Project")
         self.set_widget_tooltip(
-            btn_save_proj,
+            self.btn_save_proj,
             "Save your current workspace as a project file (.json), allowing you to preserve your progress and come back to it later. \n\nThis saves all your elements, groups, positions, and settings in a single file for easy loading! \nCtrl+S"
         )
-        btn_save_proj.clicked.connect(self.save_project)
-        btn_load_proj = QPushButton("Load Project")
+        self.btn_save_proj.clicked.connect(self.save_project)
+        self.btn_load_proj = QPushButton("Load Project")
         self.set_widget_tooltip(
-            btn_load_proj,
+            self.btn_load_proj,
             "Load a previously saved project file (.json) to restore your workspace to that state. \n\nPerfect for continuing work on existing projects or using them as templates for new ones! \nCtrl+O"
         )
-        btn_load_proj.clicked.connect(lambda: self.load_project())
-        proj_btn_layout.addWidget(btn_save_proj)
-        proj_btn_layout.addWidget(btn_load_proj)
+        self.btn_load_proj.clicked.connect(lambda: self.load_project())
+        proj_btn_layout.addWidget(self.btn_save_proj)
+        proj_btn_layout.addWidget(self.btn_load_proj)
         sidebar_layout.addLayout(proj_btn_layout)
                 
         group_ctrl_layout = QHBoxLayout()
-        btn_add_group = QPushButton("+ Add Group")
-        btn_add_group.clicked.connect(self.add_manual_group)
-        btn_add_group.setToolTip("Ctrl+Shift +")
-        btn_rem_group = QPushButton("- Remove Group")
-        btn_rem_group.clicked.connect(self.remove_manual_group)
-        btn_rem_group.setToolTip("Ctrl+Shift -")
-        group_ctrl_layout.addWidget(btn_add_group)
-        group_ctrl_layout.addWidget(btn_rem_group)
+        self.btn_add_group = QPushButton("+ Add Group")
+        self.btn_add_group.clicked.connect(self.add_manual_group)
+        self.btn_add_group.setToolTip("Ctrl+Shift +")
+        self.btn_rem_group = QPushButton("- Remove Group")
+        self.btn_rem_group.clicked.connect(self.remove_manual_group)
+        self.btn_rem_group.setToolTip("Ctrl+Shift -")
+        group_ctrl_layout.addWidget(self.btn_add_group)
+        group_ctrl_layout.addWidget(self.btn_rem_group)
         sidebar_layout.addLayout(group_ctrl_layout)
 
         sidebar_layout.addWidget(QLabel("Layer Hierarchy:"))
@@ -1091,13 +1232,13 @@ class DayZImageset(QMainWindow):
         element_count_layout.addWidget(self.label_element_count)
         sidebar_layout.addLayout(element_count_layout)
         
-        btn_export = QPushButton("EXPORT IMAGESET + EDDS")
-        btn_export.setStyleSheet("background-color: #00aa00; color: white; font-weight: bold; padding: 10px;")
-        btn_export.setToolTip(
+        self.btn_export = QPushButton("EXPORT IMAGESET + EDDS")
+        self.btn_export.setStyleSheet("background-color: #00aa00; color: white; font-weight: bold; padding: 10px;")
+        self.btn_export.setToolTip(
             "Export your workspace as a .imageset file along with its associated .edds file, ready to be used in DayZ! \n\nMake sure to save your project before exporting if you want to keep an editable version of your work! \nCtrl+E"
         )
-        btn_export.clicked.connect(self.export_imageset_and_edds)
-        sidebar_layout.addWidget(btn_export)
+        self.btn_export.clicked.connect(self.export_imageset_and_edds)
+        sidebar_layout.addWidget(self.btn_export)
 
         
         # Connect tree edits
@@ -1629,7 +1770,7 @@ class DayZImageset(QMainWindow):
             QPushButton:hover {{ background-color: #24282E; }}
             QPushButton:pressed {{ background-color: #1F2329; }}
             QComboBox {{ background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }}
-            QComboBox::drop-down {{ image: url("{arrow_down}"); border: none; background-color: #24282E; }}
+            QComboBox::drop-down {{ image: url("{arrow_down}"); subcontrol-origin: padding; subcontrol-position: top right; width: 24px; border: none; background-color: #24282E; }}
             QComboBox QAbstractItemView {{ background-color: #2C3136; color: #8AA2AE; selection-background-color: #24282E; }}
             QSpinBox {{ background-color: #2C3136; color: #8AA2AE; border: 1px solid #24282E; border-radius: 3px; padding: 4px; }}
             QSpinBox::up-button {{ image: url("{arrow_up}"); background-color: #24282E; border: none; width: 16px; }} 
@@ -2335,14 +2476,45 @@ class DayZImageset(QMainWindow):
                     element_item.show_selection_overlay()
 
     def show_about_dialog(self):
-        QMessageBox.about(self, "About", 
-            "DayZ Imageset Editor v1.2\n\n"
-            "Engineered by Strykar.\n"
-            "AI-assisted? You bet! 🤖\n\n"
-            "Dedicated to the trolls 🧌\n"
-            "Yes, AI had its grubby hand all up in this code. 🦾\n"
-            "No, it doesn't make the tool any less effective. "
-            "Stay salty! 😉")
+        current_version = "v1.4"
+        latest_version = "Unknown"
+        # We link to the latest release page directly
+        repo_url = "https://github.com/Strykar86/DayZ-Imageset-Editor/releases/latest"
+        api_url = "https://api.github.com/repos/Strykar86/DayZ-Imageset-Editor/releases/latest"
+
+        # Silently fetch the latest version from GitHub API
+        try:
+            # GitHub requires a User-Agent header, otherwise they block the request
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'DayZ-Imageset-Editor'})
+            with urllib.request.urlopen(req, timeout=2) as response:
+                data = json.loads(response.read().decode())
+                # Grab the tag name (e.g., "v1.3") from the JSON response
+                latest_version = data.get("tag_name", "Unknown")
+        except Exception:
+            latest_version = "Unable to fetch"
+
+        about_text = (
+            f"<h3>DayZ Imageset Editor</h3>"
+            f"<p><b>Current Version:</b> {current_version}<br>"
+            f"<b>Latest Version:</b> <a href='{repo_url}'>{latest_version}</a>   ← Click to download</p>"
+            f"<p>Engineered by Strykar.<br>"
+            f"AI-assisted? You bet! 🤖</p>"
+            f"<p>Dedicated to the trolls 🧌<br>"
+            f"Yes, AI had its grubby hand all up in this code. 🦾<br>"
+            f"No, it doesn't make the tool any less effective. Stay salty! 😉</p>"
+        )
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About")
+        msg.setTextFormat(Qt.RichText)
+        # Increase button hit area so the OK button is easier to press ;)
+        msg.setStyleSheet(
+            "QMessageBox { font-size: 16px; }"
+            "QMessageBox QPushButton { padding: 8px; min-width: 60px; min-height: 18px; }"
+        )
+        msg.setText(about_text)
+        msg.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        msg.exec_()
     
     def show_help_dialog(self):
         """Shows a custom help dialog with shortcuts, tips, and a clickable Discord link."""
@@ -2360,8 +2532,8 @@ class DayZImageset(QMainWindow):
         shortcuts_tab = QScrollArea()
         shortcuts_tab.setWidgetResizable(True) # Allows the internal widget to scale with the scroll area
         shortcuts_tab.setFrameShape(QScrollArea.NoFrame)
-        shortcuts_tab = QWidget()
-        shortcuts_layout = QVBoxLayout(shortcuts_tab)
+        shortcuts_content = QWidget()
+        shortcuts_layout = QVBoxLayout(shortcuts_content)
         shortcuts_text = """
         <h3 style='color: #ff5500;'>Keyboard & Mouse Shortcuts</h3>
         <table width='100%' cellpadding='6' cellspacing='0'>
@@ -2385,6 +2557,7 @@ class DayZImageset(QMainWindow):
         lbl_shortcuts.setStyleSheet("font-size: 14px;")
         shortcuts_layout.addWidget(lbl_shortcuts)
         shortcuts_layout.addStretch()
+        shortcuts_tab.setWidget(shortcuts_content)
         tabs.addTab(shortcuts_tab, "Shortcuts")
         
         # Tab 2: Tips & Cues
@@ -2491,7 +2664,74 @@ class DayZImageset(QMainWindow):
         
         dialog.exec_()
 
+    def save_app_preferences(self):
+        """Save application preferences to an INI config file."""
+        try:
+            # Use sys.executable to get the directory where the .exe/.script is located
+            exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+            config_file = os.path.join(exe_dir, "settings.ini")
+            config = configparser.ConfigParser()
+            
+            if not config.has_section("Preferences"):
+                config.add_section("Preferences")
+            
+            # Make sure instance variables exist before saving, fallback to standard defaults if not
+            ui_size = getattr(self, 'ui_font_size', 10)
+            tt_size = getattr(self, 'tooltip_font_size', 10)
+            
+            config.set("Preferences", "Language", self.combo_lang.currentText())
+            config.set("Preferences", "TooltipsEnabled", str(self.tooltips_enabled))
+            config.set("Preferences", "UIFontSize", str(ui_size))
+            config.set("Preferences", "TooltipFontSize", str(tt_size))
+            
+            with open(config_file, 'w', encoding='utf-8') as f:
+                config.write(f)
+        except Exception as e:
+            print(f"[Warning] Failed to save preferences to settings.ini: {e}")
+
+    def load_app_preferences(self):
+        """Load application preferences (language, tooltips, font sizes) from the INI config file."""
+        try:
+            # Use sys.executable to get the directory where the .exe/.script is located
+            # This works reliably in both PyInstaller binaries and development environments
+            exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+            config_file = os.path.join(exe_dir, "settings.ini")
+            config = configparser.ConfigParser()
+            config.read(config_file, encoding='utf-8')
+            
+            # 1. Load Language & Tooltip Toggle
+            saved_language = config.get("Preferences", "Language", fallback="English")
+            self.tooltips_enabled = config.getboolean("Preferences", "TooltipsEnabled", fallback=True)
+            
+            # 2. Load Font Sizes
+            self.ui_font_size = config.getint("Preferences", "UIFontSize", fallback=10)
+            self.tooltip_font_size = config.getint("Preferences", "TooltipFontSize", fallback=10)
+            
+            # 3. Apply Font Sizes Globally
+            app = QApplication.instance()
+            if app:
+                global_font = app.font()
+                global_font.setPointSize(self.ui_font_size)
+                app.setFont(global_font)
+                
+            # Apply Tooltip Font Size Globally
+            tt_font = QToolTip.font()
+            tt_font.setPointSize(self.tooltip_font_size)
+            QToolTip.setFont(tt_font)
+            
+            # 4. Apply the saved language to the UI
+            if saved_language in self.locale.language_mapping:
+                self.combo_lang.blockSignals(True)
+                self.combo_lang.setCurrentText(saved_language)
+                self.combo_lang.blockSignals(False)
+                self.on_language_changed(saved_language)
+        except Exception as e:
+            print(f"[Warning] Failed to load preferences from settings.ini: {e}")
+
     def closeEvent(self, event):
+        # Save preferences before closing
+        self.save_app_preferences()
+        
         # Prevent prompt if the canvas is completely empty
         if self.current_element_count > 0:
             msg = QMessageBox(self)
@@ -2637,15 +2877,17 @@ class DayZImageset(QMainWindow):
             QMessageBox.critical(self, "Save Error", f"Failed to save imageset:\n{str(e)}")
             return
         
-        # Convert compiled sheet to EDDS
-        temp_png = save_dir / f"_{filename}_temp.png"
+        # Convert compiled sheet to EDDS and save source files for Workbench
+        png_path = save_dir / f"{filename}.png"
+        meta_path = save_dir / f"{filename}.edds.meta"
+        
         try:
-            compiled_sheet.save(temp_png, "PNG")
-            print(f"Temporary PNG created: {temp_png}")
+            compiled_sheet.save(png_path, "PNG")
+            print(f"PNG source saved: {png_path}")
             
             converter = ImagesetConverter()
             result = converter.png_to_edds(
-                str(temp_png),
+                str(png_path),
                 str(edds_path),
                 format_type="BGRA8",
                 mipmaps=1,
@@ -2654,19 +2896,40 @@ class DayZImageset(QMainWindow):
             
             if not result['success']:
                 QMessageBox.critical(self, "EDDS Conversion Failed", result['error'])
-                temp_png.unlink(missing_ok=True)
                 return
             
             print(f"EDDS saved: {edds_path}")
-            temp_png.unlink(missing_ok=True)
+            
+            # --- Generate the .meta file for DayZ Workbench ---
+            meta_content = (
+                f"MetaFileClass {{\n"
+                f" Name \"{edds_relative}\"\n"
+                f" Author \"DayZ Imageset Editor\"\n"
+                f" Configurations {{\n"
+                f"  PNGResourceClass PC {{\n"
+                f"   SourceFile \"{filename}.png\"\n"
+                f"   Conversion DXTCompression\n"
+                f"  }}\n"
+                f"  PNGResourceClass XBOX_ONE : PC {{\n"
+                f"  }}\n"
+                f"  PNGResourceClass PS4 : PC {{\n"
+                f"  }}\n"
+                f"  PNGResourceClass LINUX : PC {{\n"
+                f"  }}\n"
+                f" }}\n"
+                f"}}"
+            )
+            
+            with open(meta_path, "w", encoding="utf-8") as f:
+                f.write(meta_content)
+            print(f"Meta file saved: {meta_path}")
             
             QMessageBox.information(self, "Export Successful",
-                f"Files saved successfully:\n\nImageset: {imageset_path}\nEDDS: {edds_path}")
+                f"Files saved successfully:\n\nImageset: {imageset_path}\nPNG Source: {png_path}\nEDDS: {edds_path}")
             print("Export Complete!")
         
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export EDDS:\n{str(e)}")
-            temp_png.unlink(missing_ok=True)
+            QMessageBox.critical(self, "Export Error", f"Failed to export files:\n{str(e)}")
     
     def export_to_edds(self):
         """Export the compiled sheet to EDDS format."""
@@ -2684,9 +2947,12 @@ class DayZImageset(QMainWindow):
                 x, y = max(0, int(item.scenePos().x())), max(0, int(item.scenePos().y()))
                 compiled_sheet.paste(self.raw_images[str(item.tree_item.filepath)], (x, y))
         
-        # Save temporary PNG
-        temp_png = out_path.with_suffix(".png")
-        compiled_sheet.save(temp_png, "PNG")
+        # Save PNG and establish paths
+        png_path = out_path.with_suffix(".png")
+        meta_path = out_path.with_suffix(".edds.meta")
+        filename = out_path.stem
+        
+        compiled_sheet.save(png_path, "PNG")
         
         try:
             converter = ImagesetConverter()
@@ -2697,7 +2963,7 @@ class DayZImageset(QMainWindow):
         
         # Convert PNG to EDDS using the converter
         result = converter.png_to_edds(
-            str(temp_png),
+            str(png_path),
             str(out_path),
             format_type="BGRA8",
             mipmaps=1,
@@ -2706,14 +2972,43 @@ class DayZImageset(QMainWindow):
         
         if not result['success']:
             QMessageBox.critical(self, "Conversion Failed", result['error'])
-            temp_png.unlink(missing_ok=True)
             return
+            
+        # Try to calculate relative path for the meta file
+        try:
+            relative_path = out_path.parent.relative_to(out_path.parent.anchor)
+            edds_relative = str(relative_path / f"{filename}.edds").replace("\\", "/")
+        except ValueError:
+            edds_relative = f"{filename}.edds"
+
+        # --- Generate the .meta file for DayZ Workbench ---
+        meta_content = (
+            f"MetaFileClass {{\n"
+            f" Name \"{edds_relative}\"\n"
+            f" Author \"DayZ Imageset Editor\"\n"
+            f" Configurations {{\n"
+            f"  PNGResourceClass PC {{\n"
+            f"   SourceFile \"{filename}.png\"\n"
+            f"   Conversion DXTCompression\n"
+            f"  }}\n"
+            f"  PNGResourceClass XBOX_ONE : PC {{\n"
+            f"  }}\n"
+            f"  PNGResourceClass PS4 : PC {{\n"
+            f"  }}\n"
+            f"  PNGResourceClass LINUX : PC {{\n"
+            f"  }}\n"
+            f" }}\n"
+            f"}}"
+        )
         
-        # Clean up temporary PNG
-        temp_png.unlink(missing_ok=True)
-        
+        try:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                f.write(meta_content)
+        except Exception as e:
+            QMessageBox.warning(self, "Meta File Error", f"Failed to write .meta file:\n{str(e)}")
+
         QMessageBox.information(self, "Success", 
-            f"Successfully exported to EDDS:\n{out_path}")
+            f"Successfully exported to EDDS:\n{out_path}\nPNG and Meta files saved.")
         print("EDDS Export Complete!")
 
     def sync_spinboxes_to_item(self, item):
